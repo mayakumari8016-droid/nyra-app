@@ -45,14 +45,283 @@ jobs:
           {"appId":"com.nyra.app","appName":"Nyra","webDir":"www","server":{"androidScheme":"https"}}
           EOF
           cat > scripts/patch.js <<'EOF'
-          const fs=require("fs");const f="android/app/src/main/AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
-          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK"];
+          const fs=require("fs");
+          const base="android/app/src/main/";
+          const f=base+"AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","RECEIVE_BOOT_COMPLETED"];
           let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
-          for(const n of ["camera","microphone","location.gps"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
-          x=x.replace("<application",a+"\n    <application");fs.writeFileSync(f,x);
+          for(const n of ["camera","microphone","location.gps","telephony","bluetooth"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
+          x=x.replace("<application",a+"\n    <application");
+          const svc=`
+                  <service android:name=".NyraNotifListener" android:exported="true" android:label="Nyra" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
+                  </service>
+                  <service android:name=".NyraAccessibility" android:exported="true" android:label="Nyra" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/nyra_a11y" />
+                  </service>
+                  <service android:name=".NyraVoiceService" android:exported="true" android:label="Nyra" android:permission="android.permission.BIND_VOICE_INTERACTION">
+                      <meta-data android:name="android.voice_interaction" android:resource="@xml/nyra_voice" />
+                      <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
+                  </service>
+                  <service android:name=".NyraSessionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION" />
+                  <service android:name=".NyraRecognitionService" android:exported="true" android:label="Nyra">
+                      <intent-filter><action android:name="android.speech.RecognitionService" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
+                  </service>
+          `;
+          x=x.replace("</application>",svc+"    </application>");
+          fs.writeFileSync(f,x);
+          fs.mkdirSync(base+"res/xml",{recursive:true});
+          fs.writeFileSync(base+"res/xml/nyra_a11y.xml",`<?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:description="@string/nyra_a11y_desc"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+              android:canRetrieveWindowContent="true"
+              android:canPerformGestures="true"
+              android:notificationTimeout="100" />
+          `);
+          fs.writeFileSync(base+"res/xml/nyra_voice.xml",`<?xml version="1.0" encoding="utf-8"?>
+          <voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:sessionService="com.nyra.app.NyraSessionService"
+              android:recognitionService="com.nyra.app.NyraRecognitionService"
+              android:supportsAssist="true" />
+          `);
+          const sf=base+"res/values/strings.xml";let st=fs.readFileSync(sf,"utf8");
+          st=st.replace("</resources>",'    <string name="nyra_a11y_desc">Nyra ko apps khol kar aur screen padh kar tumhare liye kaam karne deta hai.</string>\n</resources>');
+          fs.writeFileSync(sf,st);
           EOF
       - run: npm install
       - run: npx cap add android
+      - name: Native permission plugin aur services
+        run: |
+          mkdir -p android/app/src/main/java/com/nyra/app
+          cat > android/app/src/main/java/com/nyra/app/MainActivity.java <<'EOF'
+          package com.nyra.app;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle b) {
+                  registerPlugin(NyraPerms.class);
+                  super.onCreate(b);
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraPerms.java <<'EOF'
+          package com.nyra.app;
+          import android.Manifest;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import androidx.core.app.NotificationManagerCompat;
+          import androidx.core.content.ContextCompat;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.Collections;
+          import java.util.List;
+
+          @CapacitorPlugin(name = "NyraPerms", permissions = {
+              @Permission(alias = "mic", strings = { "android.permission.RECORD_AUDIO" }),
+              @Permission(alias = "notif", strings = { "android.permission.POST_NOTIFICATIONS" }),
+              @Permission(alias = "cam", strings = { "android.permission.CAMERA" }),
+              @Permission(alias = "phone", strings = { "android.permission.CALL_PHONE" }),
+              @Permission(alias = "contacts", strings = { "android.permission.READ_CONTACTS" }),
+              @Permission(alias = "sms", strings = { "android.permission.SEND_SMS", "android.permission.READ_SMS", "android.permission.RECEIVE_SMS" }),
+              @Permission(alias = "loc", strings = { "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION" }),
+              @Permission(alias = "media", strings = { "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO" }),
+              @Permission(alias = "storage", strings = { "android.permission.READ_EXTERNAL_STORAGE" }),
+              @Permission(alias = "calls", strings = { "android.permission.ANSWER_PHONE_CALLS", "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" }),
+              @Permission(alias = "bt", strings = { "android.permission.BLUETOOTH_CONNECT" })
+          })
+          public class NyraPerms extends Plugin {
+              private static final String[] RT = { "mic", "notif", "cam", "phone", "contacts", "sms", "loc", "media", "calls", "bt" };
+
+              private String[] perms(String a) {
+                  int sdk = Build.VERSION.SDK_INT;
+                  switch (a) {
+                      case "mic": return new String[] { "android.permission.RECORD_AUDIO" };
+                      case "notif": return sdk >= 33 ? new String[] { "android.permission.POST_NOTIFICATIONS" } : new String[0];
+                      case "cam": return new String[] { "android.permission.CAMERA" };
+                      case "phone": return new String[] { "android.permission.CALL_PHONE" };
+                      case "contacts": return new String[] { "android.permission.READ_CONTACTS" };
+                      case "sms": return new String[] { "android.permission.SEND_SMS", "android.permission.READ_SMS", "android.permission.RECEIVE_SMS" };
+                      case "loc": return new String[] { "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION" };
+                      case "media":
+                          return sdk >= 33
+                              ? new String[] { "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO" }
+                              : new String[] { "android.permission.READ_EXTERNAL_STORAGE" };
+                      case "calls":
+                          return sdk >= 26
+                              ? new String[] { "android.permission.ANSWER_PHONE_CALLS", "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" }
+                              : new String[] { "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" };
+                      case "bt": return sdk >= 31 ? new String[] { "android.permission.BLUETOOTH_CONNECT" } : new String[0];
+                      default: return new String[0];
+                  }
+              }
+
+              private boolean granted(String a) {
+                  for (String p : perms(a)) {
+                      if (ContextCompat.checkSelfPermission(getContext(), p) != PackageManager.PERMISSION_GRANTED) return false;
+                  }
+                  return true;
+              }
+
+              private JSObject status() {
+                  JSObject o = new JSObject();
+                  for (String a : RT) o.put(a, granted(a));
+                  Context c = getContext();
+                  String pk = c.getPackageName();
+                  boolean b = false, ov = false, na = false, ac = false, as = false;
+                  try { b = ((PowerManager) c.getSystemService(Context.POWER_SERVICE)).isIgnoringBatteryOptimizations(pk); } catch (Exception e) {}
+                  try { ov = Settings.canDrawOverlays(c); } catch (Exception e) {}
+                  try { na = NotificationManagerCompat.getEnabledListenerPackages(c).contains(pk); } catch (Exception e) {}
+                  try {
+                      String s = Settings.Secure.getString(c.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                      ac = s != null && s.contains(pk + "/");
+                  } catch (Exception e) {}
+                  try {
+                      String s = Settings.Secure.getString(c.getContentResolver(), "assistant");
+                      as = s != null && s.contains(pk + "/");
+                  } catch (Exception e) {}
+                  o.put("battery", b);
+                  o.put("overlay", ov);
+                  o.put("notif_access", na);
+                  o.put("a11y", ac);
+                  o.put("assistant", as);
+                  return o;
+              }
+
+              @PluginMethod
+              public void status(PluginCall call) {
+                  call.resolve(status());
+              }
+
+              @PluginMethod
+              public void request(PluginCall call) {
+                  String n = call.getString("name", "all");
+                  List<String> names = n.equals("all") ? Arrays.asList(RT) : Collections.singletonList(n);
+                  List<String> al = new ArrayList<>();
+                  for (String a : names) {
+                      if (perms(a).length > 0 && !granted(a)) {
+                          al.add(a.equals("media") && Build.VERSION.SDK_INT < 33 ? "storage" : a);
+                      }
+                  }
+                  if (al.isEmpty()) {
+                      call.resolve(status());
+                      return;
+                  }
+                  requestPermissionForAliases(al.toArray(new String[0]), call, "permCb");
+              }
+
+              @PermissionCallback
+              private void permCb(PluginCall call) {
+                  call.resolve(status());
+              }
+
+              @PluginMethod
+              public void openSetting(PluginCall call) {
+                  String n = call.getString("name", "");
+                  String pk = getContext().getPackageName();
+                  try {
+                      Intent i;
+                      switch (n) {
+                          case "battery": i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pk)); break;
+                          case "overlay": i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + pk)); break;
+                          case "notif_access": i = new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"); break;
+                          case "a11y": i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS); break;
+                          case "assistant": i = new Intent(Settings.ACTION_VOICE_INPUT_SETTINGS); break;
+                          default: i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pk));
+                      }
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      getContext().startActivity(i);
+                      call.resolve();
+                  } catch (Exception e) {
+                      try {
+                          Intent f = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pk));
+                          f.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          getContext().startActivity(f);
+                      } catch (Exception e2) {}
+                      call.resolve();
+                  }
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraNotifListener.java <<'EOF'
+          package com.nyra.app;
+          import android.service.notification.NotificationListenerService;
+          public class NyraNotifListener extends NotificationListenerService {
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraAccessibility.java <<'EOF'
+          package com.nyra.app;
+          import android.accessibilityservice.AccessibilityService;
+          import android.view.accessibility.AccessibilityEvent;
+          public class NyraAccessibility extends AccessibilityService {
+              @Override public void onAccessibilityEvent(AccessibilityEvent e) {}
+              @Override public void onInterrupt() {}
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraVoiceService.java <<'EOF'
+          package com.nyra.app;
+          import android.service.voice.VoiceInteractionService;
+          public class NyraVoiceService extends VoiceInteractionService {
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraSessionService.java <<'EOF'
+          package com.nyra.app;
+          import android.os.Bundle;
+          import android.service.voice.VoiceInteractionSession;
+          import android.service.voice.VoiceInteractionSessionService;
+          public class NyraSessionService extends VoiceInteractionSessionService {
+              @Override
+              public VoiceInteractionSession onNewSession(Bundle args) {
+                  return new NyraSession(this);
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraSession.java <<'EOF'
+          package com.nyra.app;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.service.voice.VoiceInteractionSession;
+          public class NyraSession extends VoiceInteractionSession {
+              public NyraSession(Context c) { super(c); }
+              @Override
+              public void onShow(Bundle args, int flags) {
+                  super.onShow(args, flags);
+                  try {
+                      Intent i = new Intent(getContext(), MainActivity.class);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                      getContext().startActivity(i);
+                  } catch (Exception e) {}
+                  hide();
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraRecognitionService.java <<'EOF'
+          package com.nyra.app;
+          import android.content.Intent;
+          import android.speech.RecognitionService;
+          public class NyraRecognitionService extends RecognitionService {
+              @Override protected void onStartListening(Intent i, Callback c) {}
+              @Override protected void onCancel(Callback c) {}
+              @Override protected void onStopListening(Callback c) {}
+          }
+          EOF
       - run: node scripts/patch.js
       - run: npx cap sync android
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug

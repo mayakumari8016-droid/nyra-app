@@ -53,6 +53,8 @@ h2{font-size:19px;margin:16px 0 4px}
 .a{align-self:flex-start;background:#3a1f5e;border-bottom-left-radius:4px}
 .cam{flex:1;min-height:0;position:relative;margin:12px -18px 0;background:#05030d;overflow:hidden}
 .cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cam video{background:#000}.cam video::-webkit-media-controls,.cam video::-webkit-media-controls-start-playback-button,.cam video::-webkit-media-controls-overlay-play-button{display:none!important;-webkit-appearance:none}
+.pst{flex:none;height:34px;padding:0 14px;border:0;border-radius:17px;background:#f1e3d3;color:#e07b00;font-weight:700;font-size:14px}.pst.ok{background:none;color:#1f9d57}.pst:disabled{opacity:1}
 .vt{position:absolute;top:22px;left:26px;right:26px;z-index:2}
 .vt b{color:var(--mint);font-size:15px}
 .vt p{margin:6px 0 0;color:#cbbcec;font-size:14px;line-height:1.4;text-shadow:0 1px 3px #000}
@@ -164,7 +166,7 @@ nav .t.on{background:linear-gradient(#4f8cff,#2358d6);color:#fff}
 <div class="bar"><input id="hq" placeholder="Nyra se kuch bhi poochho..." autocomplete="off"><button class="send" id="hs" aria-label="Send"><i data-ic="arrow"></i></button></div>
 </section>
 <section id="s-scan">
-<div class="cam"><video id="vid" playsinline muted autoplay></video>
+<div class="cam"><video id="vid" playsinline webkit-playsinline muted autoplay disablepictureinpicture poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video>
 <div class="vt"><b id="vn">Nyra Vision</b><p id="vs">Camera chalu ho raha hai...</p></div>
 <div class="ret"><svg width="230" height="230" viewBox="0 0 230 230" fill="none" stroke="#7eead0" stroke-width="3" aria-hidden="true"><circle cx="115" cy="115" r="108" stroke-dasharray="14 12" stroke-width="2" opacity=".5"/><path d="M60 95a60 60 0 0 1 20-28M130 55a60 60 0 0 1 40 28M175 135a60 60 0 0 1-30 45M95 178a60 60 0 0 1-28-20" stroke-linecap="round"/><circle cx="115" cy="115" r="7" fill="#7eead0" stroke="none"/></svg></div>
 <div class="ctl"><button class="s" id="flip"><i data-ic="flip"></i>Flip</button><button class="cap" id="cap" aria-label="Capture"></button><button class="s" id="rec"><i data-ic="rec"></i>Rec</button></div></div>
@@ -281,13 +283,29 @@ document.querySelectorAll("[data-task]").forEach(b=>b.onclick=()=>{tab("chat");g
 let cam=null,facing="environment",rc=null,rch=[],fT=null;
 const wait=ms=>new Promise(r=>setTimeout(r,ms)),fc=document.createElement("canvas");
 function camMsg(){$("vs").textContent=live?"Nyra dekh rahi hai. Bolo: ye kya hai?":"Camera chalu hai. Call chalao, phir Nyra dekh payegi."}
+const NP=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform()&&window.Capacitor.registerPlugin)?window.Capacitor.registerPlugin("NyraPerms"):null;
+let camTok=0;
+function stopCam(){recStop();if(cam){cam.getTracks().forEach(t=>{t.onended=null;t.stop()});cam=null}$("vid").srcObject=null}
+function camOff(){camTok++;stopCam()}
 async function camOn(){
-  camOff();$("vs").textContent="Camera chalu ho raha hai...";
-  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){$("vs").textContent="Camera yahan nahi chalega. Page https:// se kholo (file se nahi).";return false}
-  try{cam=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280}},audio:false});const v=$("vid");v.srcObject=cam;await v.play().catch(()=>{});camMsg();return true}
-  catch(e){cam=null;$("vs").textContent=e.name==="NotAllowedError"?"Camera ki permission do (Chrome > site settings).":"Camera nahi khula: "+e.name;return false}
-}
-function camOff(){recStop();if(cam){cam.getTracks().forEach(t=>t.stop());cam=null}$("vid").srcObject=null}
+  const my=++camTok;stopCam();const vs=m=>{if(my===camTok)$("vs").textContent=m};
+  vs("Camera chalu ho raha hai...");
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){vs("Camera yahan nahi chalega. Page https:// se kholo (file se nahi).");return false}
+  if(NP){try{const st=await NP.status();if(!st.cam)await NP.request({name:"cam"})}catch(e){}}
+  if(my!==camTok)return false;
+  const tries=[{video:{facingMode:{ideal:facing},width:{ideal:1280}},audio:false},{video:{facingMode:{ideal:facing}},audio:false},{video:true,audio:false}];
+  let s=null,err=null;
+  for(const c of tries){
+    try{s=await navigator.mediaDevices.getUserMedia(c);break}catch(e){err=e;if(e.name==="NotAllowedError"||e.name==="SecurityError")break;await wait(250)}
+    if(my!==camTok)return false}
+  if(my!==camTok){if(s)s.getTracks().forEach(t=>t.stop());return false}
+  if(!s){cam=null;vs(err&&err.name==="NotAllowedError"?"Camera ki permission do (Menu > Permissions).":"Camera nahi khula ("+(err?err.name:"?")+"). Screen par tap karo, dobara try karungi.");return false}
+  cam=s;const v=$("vid");v.muted=true;v.srcObject=s;
+  s.getVideoTracks().forEach(t=>t.onended=()=>{if(cam===s&&$("s-scan").classList.contains("on"))setTimeout(camOn,300)});
+  for(let i=0;i<40&&my===camTok&&!v.videoWidth;i++){try{await v.play()}catch(e){}await wait(100)}
+  if(my!==camTok)return false;
+  if(!v.videoWidth){vs("Camera atak gaya. Screen par tap karo.");return false}
+  camMsg();return true}
 function frame(q,mw){const v=$("vid");if(!cam||!v.videoWidth)return false;const w=Math.min(mw,v.videoWidth);fc.width=w;fc.height=Math.round(w*v.videoHeight/v.videoWidth);fc.getContext("2d").drawImage(v,0,0,fc.width,fc.height);return true}
 function sendFrame(){if(!live||!ws||ws.readyState!==1||!frame(.6,640))return;ws.send(JSON.stringify({realtimeInput:{video:{data:fc.toDataURL("image/jpeg",.6).split(",")[1],mimeType:"image/jpeg"}}}))}
 function dl(blob,name){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
@@ -330,6 +348,8 @@ function tab(n){
   n==="scan"?camOn():camOff();setMn(n==="home"?"Home":"");
 }
 document.querySelectorAll("nav .t").forEach(b=>b.onclick=()=>tab(b.dataset.tab));
+$("s-scan").addEventListener("click",e=>{if(!e.target.closest("button")&&(!cam||!$("vid").videoWidth))camOn()});
+document.addEventListener("visibilitychange",()=>{if(!$("s-scan").classList.contains("on"))return;if(document.hidden)camOff();else camOn()});
 $("flip").onclick=()=>{facing=facing==="environment"?"user":"environment";camOn()};
 $("cap").onclick=snap;$("rec").onclick=()=>rc?recStop():recStart();
 
@@ -679,28 +699,68 @@ function saForm(p){const f=document.createElement("div");f.className="spv";
   return f}
 
 /* permissions */
-const PMS=[["mic","Microphone","Live call me bolne ke liye",async()=>{const t=await navigator.mediaDevices.getUserMedia({audio:true});t.getTracks().forEach(x=>x.stop())},"microphone"],
-["cam","Camera","Scan, photo aur video ke liye",async()=>{const t=await navigator.mediaDevices.getUserMedia({video:true});t.getTracks().forEach(x=>x.stop())},"camera"],
-["loc","Location","Mausam aur aas-paas ki jaankari ke liye",()=>new Promise((ok,no)=>navigator.geolocation?navigator.geolocation.getCurrentPosition(ok,no,{timeout:15000}):no(new Error("nahi")))  ,"geolocation"],
-["not","Notifications","Reminder aur alerts ke liye",async()=>{if(!("Notification" in window))throw new Error("nahi");const r=await Notification.requestPermission();if(r!=="granted")throw new Error("mana")},"notifications"]];
-let pmSt={};
-async function pmCheck(){for(const m of PMS){try{const r=await navigator.permissions.query({name:m[4]});pmSt[m[0]]=r.state==="granted"?"ok":r.state==="denied"?"no":"ask"}catch(e){if(m[0]==="not"&&"Notification" in window)pmSt.not=Notification.permission==="granted"?"ok":Notification.permission==="denied"?"no":"ask";else if(!pmSt[m[0]])pmSt[m[0]]="ask"}}}
-async function pmAsk(m){try{await m[3]();pmSt[m[0]]="ok"}catch(e){pmSt[m[0]]=(e&&(e.name==="NotAllowedError"||e.code===1||e.message==="mana"))?"no":pmSt[m[0]]==="ok"?"ok":"no"}}
+const WEBP={
+  mic:()=>navigator.mediaDevices.getUserMedia({audio:true}).then(t=>t.getTracks().forEach(x=>x.stop())),
+  cam:()=>navigator.mediaDevices.getUserMedia({video:true}).then(t=>t.getTracks().forEach(x=>x.stop())),
+  loc:()=>new Promise((ok,no)=>navigator.geolocation?navigator.geolocation.getCurrentPosition(ok,no,{timeout:15000}):no(new Error("nahi"))),
+  notif:()=>"Notification" in window?Notification.requestPermission():Promise.reject(new Error("nahi"))};
+/* [id, title, desc, step, kind] kind: rt = Android popup, set = system settings screen */
+const PMS=[
+["mic","Microphone","Taaki tum Nyra se baat kar sako. Zaroori hai.",1,"rt"],
+["notif","Notifications","Nyra ki apni notification, jo use background me chalu rakhti hai.",1,"rt"],
+["cam","Camera","Taaki wo photo le sake ya jo tum phone se dikhao wo dekh sake.",1,"rt"],
+["phone","Phone calls","Taaki wo tumhare liye call laga sake.",1,"rt"],
+["contacts","Contacts","Taaki sirf naam kaafi ho — number wo khud dhoondh legi.",1,"rt"],
+["sms","SMS","Taaki wo text message bhej sake.",1,"rt"],
+["loc","Location","Mausam, raasta, aur tum kahan ho.",1,"rt"],
+["media","Gallery aur files","Taaki wo koi photo ya file dhoondh kar bhej sake.",1,"rt"],
+["calls","Call uthana aur sambhalna","Taaki wo bata sake kaun call kar raha hai aur call utha ya kaat sake.",1,"rt"],
+["bt","Bluetooth","Taaki uski awaaz tumhare earbuds ya speaker par aaye.",1,"rt"],
+["battery","Battery — optimisation band","Zaroori hai. Iske bina phone background me Nyra ko band kar deta hai aur wo chup ho jaati hai. Tap karo, phir Allow chuno.",2,"set"],
+["overlay","Dusre apps ke upar dikhna","Taaki uska orb tum jo bhi kar rahe ho uske upar tair sake. List me Nyra chuno, phir on karo.",2,"set"],
+["notif_access","Notification access","WhatsApp messages padhne aur kaun call kar raha hai ye jaanne ke liye. List me \"Nyra\" on karo.",2,"set"],
+["a11y","Accessibility service","Taaki wo apps khol sake, tap kar sake aur tumhare liye screen padh sake. List me \"Nyra\" on karo.",2,"set"],
+["assistant","Default assistant","Power button long-press karo ya kone se swipe karo aur use bulao, lock screen par bhi. \"Nyra\" chuno.",2,"set"]];
+let pmSt={},pmStep=1;
+async function pmCheck(){
+  if(NP){try{pmSt=await NP.status();return}catch(e){}}
+  const nm={mic:"microphone",cam:"camera",loc:"geolocation",notif:"notifications"};
+  for(const id in nm){try{const r=await navigator.permissions.query({name:nm[id]});pmSt[id]=r.state==="granted"}catch(e){pmSt[id]=id==="notif"&&"Notification" in window?Notification.permission==="granted":!!pmSt[id]}}}
+async function pmAsk(m){
+  const id=m[0];
+  if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else await NP.openSetting({name:id})}catch(e){}return}
+  if(WEBP[id]){try{await WEBP[id]();pmSt[id]=true}catch(e){pmSt[id]=false}}}
 async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))return;
-  await pmCheck();if(!sp.classList.contains("sk"))return;sp.innerHTML="";
+  await pmCheck();if(!sp.classList.contains("sk"))return;sp.innerHTML="";sp.dataset.pg="perm";
   const c=document.createElement("div");c.className="pc";
-  c.innerHTML='<div class="ph"><div class="pt"><i data-ic="shield" data-sz="22"></i></div><div><b>Permissions</b><small></small></div></div><div class="pml"></div><button class="skb" id="pmall" style="width:100%;margin-top:14px;height:52px;font-size:17px;background:linear-gradient(#5b9bff,#2f6fe0);color:#fff">Sab permission do</button><div class="hint" style="margin-top:12px"><i></i><span>Har permission ke liye Android ek popup dikhayega. Allow dabao. Agar kisi ko galti se mana kar diya, to phone ke Settings > Apps > Nyra > Permissions me jaakar do.</span></div>';
-  c.querySelector("small").textContent=S.name+" ko kaam karne ke liye ye chahiye";
+  c.innerHTML='<div class="ph"><div class="pt"><i data-ic="shield" data-sz="22"></i></div><div><b></b><small></small></div></div><div class="pml"></div><button class="skb" id="pmall" style="width:100%;margin-top:14px;height:52px;font-size:17px;background:linear-gradient(#5b9bff,#2f6fe0);color:#fff"></button><button class="skb" id="pmnx" style="width:100%;margin-top:10px;height:52px;font-size:17px"></button><div class="hint" style="margin-top:12px"><i></i><span></span></div>';
+  c.querySelector("b").textContent=pmStep===1?"Nyra ko apna phone use karne do":"Nyra ko background me zinda rakho";
+  c.querySelector("small").textContent="Step "+pmStep+" / 2 \u00b7 "+(pmStep===1?"Ek tap \u2014 Android ek ek karke sab poochega. Sirf microphone zaroori hai; baaki se wo kaam ki banti hai.":"Battery zaroori hai \u2014 isi se screen off hone par wo chup nahi hoti. Baaki optional hain par unse wo kahin zyada kaam ki ho jaati hai.");
   const l=c.querySelector(".pml");
-  PMS.forEach(m=>{const r=document.createElement("div");r.className="skr";const st=pmSt[m[0]];
-    r.innerHTML='<div><b></b><small></small></div><button class="skb"></button>';r.querySelector("b").textContent=m[1];r.querySelector("small").textContent=m[2];
-    const b=r.querySelector(".skb");if(st==="ok"){b.className="skx";b.textContent="\u2713 Mil gayi";b.disabled=true}else{b.textContent=st==="no"?"Dobara":"Do";b.onclick=async()=>{b.disabled=true;await pmAsk(m);pmRender()}}
+  PMS.filter(m=>m[3]===pmStep).forEach(m=>{const r=document.createElement("div");r.className="skr";
+    r.innerHTML='<div><b></b><small></small></div><button class="pst"></button>';r.querySelector("b").textContent=m[1];r.querySelector("small").textContent=m[2];
+    const b=r.querySelector(".pst");
+    if(pmSt[m[0]]){b.classList.add("ok");b.textContent="\u2713";b.disabled=true}
+    else{b.textContent="Baaki hai";b.onclick=async()=>{b.disabled=true;await pmAsk(m);pmRender()}}
     l.appendChild(r)});
-  c.querySelector("#pmall").onclick=async()=>{const bt=c.querySelector("#pmall");bt.disabled=true;for(const m of PMS){if(pmSt[m[0]]!=="ok")await pmAsk(m)}
-    try{localStorage.setItem("nyra_pm","1")}catch(e){}
-    const miss=PMS.filter(m=>pmSt[m[0]]!=="ok").map(m=>m[1]);toast(miss.length?"Baaki: "+miss.join(", "):"Sab permission mil gayi");
-    await pmRender();if(!miss.length&&PM_FIRST){tab("home");if(!S.key)ppOpen(true)}};
+  const all=c.querySelector("#pmall"),nx=c.querySelector("#pmnx"),ht=c.querySelector(".hint span");
+  const done=()=>{try{localStorage.setItem("nyra_pm","1")}catch(e){}tab("home");if(!S.key)ppOpen(true)};
+  if(pmStep===1){
+    all.textContent="\u2713  Sab allow karo";nx.textContent="\u2192  Aage badho";nx.disabled=!pmSt.mic;
+    ht.textContent=pmSt.mic?"Jo baaki hai wo baad me Menu > Permissions se bhi de sakte ho.":"Microphone allow hote hi \"Aage badho\" khul jayega.";
+    all.onclick=async()=>{all.disabled=true;
+      if(NP){try{pmSt=await NP.request({name:"all"})}catch(e){}}
+      else for(const m of PMS)if(m[3]===1&&!pmSt[m[0]])await pmAsk(m);
+      pmRender()};
+    nx.onclick=()=>{pmStep=2;pmRender()}}
+  else{
+    const okBat=!NP||pmSt.battery;
+    all.style.display="none";nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;
+    ht.textContent="\"Baaki hai\" wali row par tap karo, uski system screen khulegi \u2014 kaam hone par yahan wapas aao. Inme se koi bhi baad me Menu > Permissions me badal sakte ho.";
+    nx.onclick=done}
   sp.appendChild(c);icons()}
+function pmBack(){const sp=$("s-page");if(sp.querySelector(".pml"))pmRender()}
+document.addEventListener("resume",pmBack);window.addEventListener("focus",pmBack);
 if(PM_FIRST)setTimeout(()=>{ppOpen(false);pg("Permissions")},400);
 if("serviceWorker" in navigator&&/^https?:$/.test(location.protocol))navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
