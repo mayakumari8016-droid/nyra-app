@@ -1,0 +1,62 @@
+name: Build Nyra APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Project taiyaar karo
+        run: |
+          mkdir -p www/icons scripts
+          if [ -f nyra-app.html ]; then cp nyra-app.html www/index.html; else cp index.html www/index.html; fi
+          cat > www/manifest.webmanifest <<'EOF'
+          {"name":"Nyra","short_name":"Nyra","start_url":"index.html","display":"standalone","background_color":"#dbe6f8","theme_color":"#dbe6f8","icons":[{"src":"icons/icon-192.png","sizes":"192x192","type":"image/png"},{"src":"icons/icon-512.png","sizes":"512x512","type":"image/png"}]}
+          EOF
+          cat > www/sw.js <<'EOF'
+          self.addEventListener("install",e=>self.skipWaiting());
+          self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));
+          self.addEventListener("fetch",e=>{if(e.request.method!=="GET"||new URL(e.request.url).origin!==location.origin)return;e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)))});
+          EOF
+          cat > mkicon.py <<'EOF'
+          import zlib,struct
+          def png(n,path):
+              rows=b"".join(b"\x00"+bytes([47,111,224])*n for _ in range(n))
+              def ch(t,d):
+                  c=struct.pack(">I",len(d))+t+d
+                  return c+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
+              open(path,"wb").write(b"\x89PNG\r\n\x1a\n"+ch(b"IHDR",struct.pack(">IIBBBBB",n,n,8,2,0,0,0))+ch(b"IDAT",zlib.compress(rows))+ch(b"IEND",b""))
+          png(192,"www/icons/icon-192.png");png(512,"www/icons/icon-512.png");png(512,"icon.png")
+          EOF
+          python3 mkicon.py
+          cat > package.json <<'EOF'
+          {"name":"nyra-app","version":"1.0.0","private":true,"dependencies":{"@capacitor/core":"^6.2.0","@capacitor/android":"^6.2.0"},"devDependencies":{"@capacitor/cli":"^6.2.0"}}
+          EOF
+          cat > capacitor.config.json <<'EOF'
+          {"appId":"com.nyra.app","appName":"Nyra","webDir":"www","server":{"androidScheme":"https"}}
+          EOF
+          cat > scripts/patch.js <<'EOF'
+          const fs=require("fs");const f="android/app/src/main/AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK"];
+          let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
+          for(const n of ["camera","microphone","location.gps"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
+          x=x.replace("<application",a+"\n    <application");fs.writeFileSync(f,x);
+          EOF
+      - run: npm install
+      - run: npx cap add android
+      - run: node scripts/patch.js
+      - run: npx cap sync android
+      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nyra-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
