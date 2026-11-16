@@ -48,7 +48,7 @@ jobs:
           const fs=require("fs");
           const base="android/app/src/main/";
           const f=base+"AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
-          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","RECEIVE_BOOT_COMPLETED"];
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED"];
           let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
           for(const n of ["camera","microphone","location.gps","telephony","bluetooth"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
           x=x.replace("<application",a+"\n    <application");
@@ -64,6 +64,7 @@ jobs:
                       <meta-data android:name="android.voice_interaction" android:resource="@xml/nyra_voice" />
                       <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
                   </service>
+                  <service android:name=".NyraService" android:exported="false" android:foregroundServiceType="microphone" />
                   <service android:name=".NyraSessionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION" />
                   <service android:name=".NyraRecognitionService" android:exported="true" android:label="Nyra">
                       <intent-filter><action android:name="android.speech.RecognitionService" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
@@ -77,9 +78,10 @@ jobs:
               android:description="@string/nyra_a11y_desc"
               android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+              android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagReportViewIds"
               android:canRetrieveWindowContent="true"
               android:canPerformGestures="true"
+              android:canTakeScreenshot="true"
               android:notificationTimeout="100" />
           `);
           fs.writeFileSync(base+"res/xml/nyra_voice.xml",`<?xml version="1.0" encoding="utf-8"?>
@@ -105,6 +107,7 @@ jobs:
               @Override
               public void onCreate(Bundle b) {
                   registerPlugin(NyraPerms.class);
+                  registerPlugin(NyraActions.class);
                   super.onCreate(b);
               }
           }
@@ -268,10 +271,420 @@ jobs:
           cat > android/app/src/main/java/com/nyra/app/NyraAccessibility.java <<'EOF'
           package com.nyra.app;
           import android.accessibilityservice.AccessibilityService;
+          import android.accessibilityservice.GestureDescription;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.graphics.Path;
+          import android.graphics.Rect;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.util.Base64;
+          import android.view.Display;
           import android.view.accessibility.AccessibilityEvent;
+          import android.view.accessibility.AccessibilityNodeInfo;
+          import java.io.ByteArrayOutputStream;
+          import java.util.ArrayList;
+          import java.util.List;
+
           public class NyraAccessibility extends AccessibilityService {
-              @Override public void onAccessibilityEvent(AccessibilityEvent e) {}
+              public static volatile NyraAccessibility inst;
+              public static volatile String lastPkg = "";
+
+              @Override protected void onServiceConnected() { inst = this; }
+              @Override public boolean onUnbind(Intent i) { inst = null; return super.onUnbind(i); }
+              @Override public void onAccessibilityEvent(AccessibilityEvent e) {
+                  if (e != null && e.getPackageName() != null) lastPkg = e.getPackageName().toString();
+              }
               @Override public void onInterrupt() {}
+
+              private void collect(AccessibilityNodeInfo n, List<AccessibilityNodeInfo> out, int depth) {
+                  if (n == null || out.size() > 1500 || depth > 60) return;
+                  out.add(n);
+                  for (int i = 0; i < n.getChildCount(); i++) collect(n.getChild(i), out, depth + 1);
+              }
+
+              public String dump() {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r == null) return "";
+                  List<AccessibilityNodeInfo> all = new ArrayList<>();
+                  collect(r, all, 0);
+                  StringBuilder sb = new StringBuilder("app: " + r.getPackageName() + "\n");
+                  Rect b = new Rect();
+                  for (AccessibilityNodeInfo n : all) {
+                      CharSequence t = n.getText();
+                      CharSequence d = n.getContentDescription();
+                      String s = (t != null && t.length() > 0) ? t.toString() : (d != null ? d.toString() : "");
+                      if (s.isEmpty() || !n.isVisibleToUser()) continue;
+                      n.getBoundsInScreen(b);
+                      sb.append(n.isClickable() ? "[tap] " : "").append(s.replace("\n", " "))
+                        .append(" @").append(b.centerX()).append(",").append(b.centerY()).append("\n");
+                      if (sb.length() > 6000) break;
+                  }
+                  return sb.toString();
+              }
+
+              private boolean clickNode(AccessibilityNodeInfo n) {
+                  AccessibilityNodeInfo c = n;
+                  for (int i = 0; i < 8 && c != null; i++) {
+                      if (c.isClickable() && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+                      c = c.getParent();
+                  }
+                  Rect b = new Rect();
+                  n.getBoundsInScreen(b);
+                  return tap(b.centerX(), b.centerY());
+              }
+
+              public boolean clickText(String t) {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r == null || t == null || t.isEmpty()) return false;
+                  List<AccessibilityNodeInfo> l = r.findAccessibilityNodeInfosByText(t);
+                  if (l == null) return false;
+                  for (AccessibilityNodeInfo n : l) {
+                      if (n.isVisibleToUser() && clickNode(n)) return true;
+                  }
+                  return false;
+              }
+
+              /* YouTube search results me sabse upar wala video dabata hai */
+              public boolean clickFirstVideo() {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r == null) return false;
+                  List<AccessibilityNodeInfo> all = new ArrayList<>();
+                  collect(r, all, 0);
+                  AccessibilityNodeInfo best = null;
+                  int bestTop = Integer.MAX_VALUE;
+                  Rect b = new Rect();
+                  for (AccessibilityNodeInfo n : all) {
+                      CharSequence d = n.getContentDescription();
+                      if (d == null) continue;
+                      String s = d.toString().toLowerCase();
+                      boolean video = s.contains("play video") || (s.contains("views") && (s.contains("minute") || s.contains("second")));
+                      if (!video || s.contains("sponsored")) continue;
+                      n.getBoundsInScreen(b);
+                      if (b.height() > 100 && b.top < bestTop) { bestTop = b.top; best = n; }
+                  }
+                  return best != null && clickNode(best);
+              }
+
+              public boolean tap(float x, float y) {
+                  Path p = new Path();
+                  p.moveTo(x, y);
+                  GestureDescription g = new GestureDescription.Builder()
+                      .addStroke(new GestureDescription.StrokeDescription(p, 0, 60)).build();
+                  return dispatchGesture(g, null, null);
+              }
+
+              public boolean swipe(float x1, float y1, float x2, float y2) {
+                  Path p = new Path();
+                  p.moveTo(x1, y1);
+                  p.lineTo(x2, y2);
+                  GestureDescription g = new GestureDescription.Builder()
+                      .addStroke(new GestureDescription.StrokeDescription(p, 0, 300)).build();
+                  return dispatchGesture(g, null, null);
+              }
+
+              public boolean scroll(boolean down) {
+                  int w = getResources().getDisplayMetrics().widthPixels;
+                  int h = getResources().getDisplayMetrics().heightPixels;
+                  return down ? swipe(w / 2f, h * 0.72f, w / 2f, h * 0.28f) : swipe(w / 2f, h * 0.28f, w / 2f, h * 0.72f);
+              }
+
+              public boolean press(String k) {
+                  switch (k) {
+                      case "back": return performGlobalAction(GLOBAL_ACTION_BACK);
+                      case "home": return performGlobalAction(GLOBAL_ACTION_HOME);
+                      case "recents": return performGlobalAction(GLOBAL_ACTION_RECENTS);
+                      case "notifications": return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+                      default: return false;
+                  }
+              }
+
+              public boolean typeText(String s) {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r == null) return false;
+                  AccessibilityNodeInfo f = r.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                  if (f == null) {
+                      List<AccessibilityNodeInfo> all = new ArrayList<>();
+                      collect(r, all, 0);
+                      for (AccessibilityNodeInfo n : all) { if (n.isEditable()) { f = n; break; } }
+                  }
+                  if (f == null) return false;
+                  Bundle a = new Bundle();
+                  a.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, s);
+                  return f.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, a);
+              }
+
+              public interface ShotCb { void done(String b64); }
+
+              /* Screenshot (Android 11+) -> chhota JPEG base64 */
+              public void shot(final ShotCb cb) {
+                  if (Build.VERSION.SDK_INT < 30) { cb.done(null); return; }
+                  try {
+                      takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new AccessibilityService.TakeScreenshotCallback() {
+                          @Override public void onSuccess(AccessibilityService.ScreenshotResult r) {
+                              try {
+                                  Bitmap hw = Bitmap.wrapHardwareBuffer(r.getHardwareBuffer(), r.getColorSpace());
+                                  Bitmap b = hw.copy(Bitmap.Config.ARGB_8888, false);
+                                  int w = 720;
+                                  int h = Math.max(1, Math.round(b.getHeight() * (w / (float) b.getWidth())));
+                                  Bitmap sm = Bitmap.createScaledBitmap(b, w, h, true);
+                                  ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                                  sm.compress(Bitmap.CompressFormat.JPEG, 60, bo);
+                                  r.getHardwareBuffer().close();
+                                  cb.done(Base64.encodeToString(bo.toByteArray(), Base64.NO_WRAP));
+                              } catch (Exception e) { cb.done(null); }
+                          }
+                          @Override public void onFailure(int code) { cb.done(null); }
+                      });
+                  } catch (Exception e) { cb.done(null); }
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraActions.java <<'EOF'
+          package com.nyra.app;
+          import android.app.Activity;
+          import android.content.ActivityNotFoundException;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.ApplicationInfo;
+          import android.content.pm.PackageManager;
+          import android.media.AudioManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.view.KeyEvent;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          @CapacitorPlugin(name = "NyraActions")
+          public class NyraActions extends Plugin {
+              private static final String NOACC = "Accessibility service on nahi hai. Menu > Permissions me Accessibility me Nyra on karo.";
+
+              private JSObject res(boolean ok, String msg) {
+                  JSObject o = new JSObject();
+                  o.put("ok", ok);
+                  o.put("msg", msg);
+                  return o;
+              }
+
+              private void sleep(long ms) {
+                  try { Thread.sleep(ms); } catch (InterruptedException e) {}
+              }
+
+              private Intent findLaunch(PackageManager pm, String n, boolean exact) {
+                  for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                      Intent li = pm.getLaunchIntentForPackage(ai.packageName);
+                      if (li == null) continue;
+                      String l = String.valueOf(pm.getApplicationLabel(ai)).toLowerCase();
+                      if (exact ? l.equals(n) : l.contains(n)) return li;
+                  }
+                  return null;
+              }
+
+              @PluginMethod
+              public void openApp(PluginCall call) {
+                  String n = call.getString("name", "").trim().toLowerCase();
+                  if (n.isEmpty()) { call.resolve(res(false, "app ka naam batao")); return; }
+                  PackageManager pm = getContext().getPackageManager();
+                  Intent i = null;
+                  if (n.contains(".")) i = pm.getLaunchIntentForPackage(n);
+                  if (i == null) i = findLaunch(pm, n, true);
+                  if (i == null) i = findLaunch(pm, n, false);
+                  if (i == null) { call.resolve(res(false, n + " naam ka app nahi mila")); return; }
+                  try {
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      getContext().startActivity(i);
+                      call.resolve(res(true, n + " khul gaya"));
+                  } catch (Exception e) {
+                      call.resolve(res(false, "app nahi khula: " + e.getMessage()));
+                  }
+              }
+
+              @PluginMethod
+              public void youtube(final PluginCall call) {
+                  final String q = call.getString("query", "");
+                  final boolean play = Boolean.TRUE.equals(call.getBoolean("play", false));
+                  final Context c = getContext();
+                  try {
+                      Uri u = q.isEmpty() ? Uri.parse("https://www.youtube.com/") : Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q));
+                      Intent i = new Intent(Intent.ACTION_VIEW, u);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      i.setPackage("com.google.android.youtube");
+                      try { c.startActivity(i); }
+                      catch (ActivityNotFoundException e) { i.setPackage(null); c.startActivity(i); }
+                  } catch (Exception e) {
+                      call.resolve(res(false, "YouTube nahi khula: " + e.getMessage()));
+                      return;
+                  }
+                  if (!play || q.isEmpty()) { call.resolve(res(true, "YouTube khul gaya")); return; }
+                  new Thread(new Runnable() {
+                      @Override public void run() {
+                          if (NyraAccessibility.inst == null) {
+                              call.resolve(res(true, "YouTube khul gaya, par video apne aap chalane ke liye Accessibility on chahiye"));
+                              return;
+                          }
+                          sleep(3500);
+                          boolean ok = false;
+                          for (int k = 0; k < 8 && !ok; k++) {
+                              NyraAccessibility a = NyraAccessibility.inst;
+                              if (a != null) ok = a.clickFirstVideo();
+                              if (!ok) sleep(1000);
+                          }
+                          call.resolve(res(ok, ok ? "video chala diya: " + q : "search khul gaya par video nahi dabaya ja saka, read_screen se dekh kar tap_text karo"));
+                      }
+                  }).start();
+              }
+
+              @PluginMethod
+              public void media(PluginCall call) {
+                  String a = call.getString("action", "toggle");
+                  AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+                  int k = -1;
+                  switch (a) {
+                      case "play": k = KeyEvent.KEYCODE_MEDIA_PLAY; break;
+                      case "pause": k = KeyEvent.KEYCODE_MEDIA_PAUSE; break;
+                      case "toggle": k = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE; break;
+                      case "next": k = KeyEvent.KEYCODE_MEDIA_NEXT; break;
+                      case "previous": k = KeyEvent.KEYCODE_MEDIA_PREVIOUS; break;
+                      default: break;
+                  }
+                  if (k > 0) {
+                      am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, k));
+                      am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, k));
+                  } else if (a.equals("vol_up")) {
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
+                  } else if (a.equals("vol_down")) {
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                  } else if (a.equals("mute")) {
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, AudioManager.FLAG_SHOW_UI);
+                  } else {
+                      call.resolve(res(false, "galat action"));
+                      return;
+                  }
+                  call.resolve(res(true, a + " ho gaya"));
+              }
+
+              @PluginMethod
+              public void screen(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  String d = a.dump();
+                  call.resolve(res(true, d.isEmpty() ? "screen khaali ya padhi nahi ja saki" : d));
+              }
+
+              @PluginMethod
+              public void screenshot(final PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  if (Build.VERSION.SDK_INT < 30) { call.resolve(res(false, "screenshot Android 11 se upar chalta hai")); return; }
+                  a.shot(new NyraAccessibility.ShotCb() {
+                      @Override public void done(String b64) {
+                          if (b64 == null) { call.resolve(res(false, "screenshot nahi mila")); return; }
+                          JSObject o = res(true, "ok");
+                          o.put("data", b64);
+                          call.resolve(o);
+                      }
+                  });
+              }
+
+              @PluginMethod
+              public void tapText(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  String t = call.getString("text", "");
+                  boolean ok = a.clickText(t);
+                  call.resolve(res(ok, ok ? "tap kar diya: " + t : "screen par '" + t + "' nahi mila"));
+              }
+
+              @PluginMethod
+              public void tapXY(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  Double x = call.getDouble("x", 0.0);
+                  Double y = call.getDouble("y", 0.0);
+                  boolean ok = a.tap(x.floatValue(), y.floatValue());
+                  call.resolve(res(ok, ok ? "tap ho gaya" : "tap nahi hua"));
+              }
+
+              @PluginMethod
+              public void scroll(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  boolean ok = a.scroll("down".equals(call.getString("direction", "down")));
+                  call.resolve(res(ok, ok ? "scroll ho gaya" : "scroll nahi hua"));
+              }
+
+              @PluginMethod
+              public void press(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  String k = call.getString("key", "back");
+                  boolean ok = a.press(k);
+                  call.resolve(res(ok, ok ? k + " dab gaya" : "nahi daba"));
+              }
+
+              @PluginMethod
+              public void typeText(PluginCall call) {
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) { call.resolve(res(false, NOACC)); return; }
+                  boolean ok = a.typeText(call.getString("text", ""));
+                  call.resolve(res(ok, ok ? "likh diya" : "koi text box nahi mila"));
+              }
+
+              @PluginMethod
+              public void fg(PluginCall call) {
+                  try {
+                      Intent i = new Intent(getContext(), NyraService.class);
+                      if (Boolean.TRUE.equals(call.getBoolean("on", true))) {
+                          if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
+                          else getContext().startService(i);
+                      } else {
+                          getContext().stopService(i);
+                      }
+                  } catch (Exception e) {}
+                  call.resolve(res(true, "ok"));
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraService.java <<'EOF'
+          package com.nyra.app;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.pm.ServiceInfo;
+          import android.os.Build;
+          import android.os.IBinder;
+
+          public class NyraService extends Service {
+              @Override public IBinder onBind(Intent i) { return null; }
+
+              @Override
+              public int onStartCommand(Intent in, int flags, int id) {
+                  try {
+                      String ch = "nyra_live";
+                      NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          nm.createNotificationChannel(new NotificationChannel(ch, "Nyra", NotificationManager.IMPORTANCE_LOW));
+                      }
+                      Intent o = new Intent(this, MainActivity.class);
+                      o.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+                      PendingIntent pi = PendingIntent.getActivity(this, 0, o, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                      Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                      b.setContentTitle("Nyra chalu hai").setContentText("Sun rahi hai...")
+                          .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true);
+                      Notification n = b.build();
+                      if (Build.VERSION.SDK_INT >= 30) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+                      else startForeground(7, n);
+                  } catch (Exception e) {
+                      stopSelf();
+                  }
+                  return START_STICKY;
+              }
           }
           EOF
           cat > android/app/src/main/java/com/nyra/app/NyraVoiceService.java <<'EOF'

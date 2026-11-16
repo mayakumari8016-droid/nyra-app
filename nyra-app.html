@@ -284,6 +284,8 @@ let cam=null,facing="environment",rc=null,rch=[],fT=null;
 const wait=ms=>new Promise(r=>setTimeout(r,ms)),fc=document.createElement("canvas");
 function camMsg(){$("vs").textContent=live?"Nyra dekh rahi hai. Bolo: ye kya hai?":"Camera chalu hai. Call chalao, phir Nyra dekh payegi."}
 const NP=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform()&&window.Capacitor.registerPlugin)?window.Capacitor.registerPlugin("NyraPerms"):null;
+const NA=NP?window.Capacitor.registerPlugin("NyraActions"):null;
+async function na(m,args){if(!NA)return "Ye kaam sirf Nyra app (APK) me chalta hai.";try{const r=await NA[m](args||{});return r&&r.msg!=null?r.msg:JSON.stringify(r)}catch(e){return "error: "+(e&&e.message||e)}}
 let camTok=0;
 function stopCam(){recStop();if(cam){cam.getTracks().forEach(t=>{t.onended=null;t.stop()});cam=null}$("vid").srcObject=null}
 function camOff(){camTok++;stopCam()}
@@ -319,6 +321,16 @@ function openUrl(u){let w=null;try{w=window.open(u,"_blank")}catch(e){}if(w)retu
 $("lk").onclick=()=>setTimeout(()=>$("lk").classList.remove("on"),300);
 const FD=[
 {name:"open_youtube",description:"YouTube kholo; query di ho to usse search karo",parameters:{type:"OBJECT",properties:{query:{type:"STRING"}}}},
+{name:"youtube_play",description:"YouTube kholo, query search karo aur pehla video apne aap chala do (gaana ya video lagane ke liye)",parameters:{type:"OBJECT",properties:{query:{type:"STRING"}},required:["query"]}},
+{name:"open_app",description:"Phone ka koi bhi app naam se kholo (whatsapp, chrome, maps, spotify, instagram, settings...)",parameters:{type:"OBJECT",properties:{name:{type:"STRING"}},required:["name"]}},
+{name:"media_control",description:"Chal rahe gaane/video ko control karo",parameters:{type:"OBJECT",properties:{action:{type:"STRING",enum:["play","pause","toggle","next","previous","vol_up","vol_down","mute"]}},required:["action"]}},
+{name:"read_screen",description:"Phone ki abhi ki screen ka text padho (kaun sa app, kya likha hai, kaunse button hain)"},
+{name:"look_screen",description:"Phone ki screen ka screenshot lekar dekho (jab text se samajh na aaye ya tasveer dekhni ho)"},
+{name:"tap_text",description:"Screen par is text ya naam wale button/item par tap karo",parameters:{type:"OBJECT",properties:{text:{type:"STRING"}},required:["text"]}},
+{name:"tap_position",description:"Screen par pixel position par tap karo (read_screen me @x,y diya hota hai)",parameters:{type:"OBJECT",properties:{x:{type:"NUMBER"},y:{type:"NUMBER"}},required:["x","y"]}},
+{name:"scroll_screen",description:"Screen scroll karo",parameters:{type:"OBJECT",properties:{direction:{type:"STRING",enum:["down","up"]}},required:["direction"]}},
+{name:"press_key",description:"Phone ka back, home, recents ya notification shade dabao",parameters:{type:"OBJECT",properties:{key:{type:"STRING",enum:["back","home","recents","notifications"]}},required:["key"]}},
+{name:"type_text",description:"Jis text box me cursor hai usme text likho",parameters:{type:"OBJECT",properties:{text:{type:"STRING"}},required:["text"]}},
 {name:"open_link",description:"Koi https website kholo",parameters:{type:"OBJECT",properties:{url:{type:"STRING"}},required:["url"]}},
 {name:"open_camera",description:"Camera kholo taaki tum dekh sako"},
 {name:"close_camera",description:"Camera band karo, home par jao"},
@@ -330,7 +342,17 @@ const FD=[
 {name:"save_memory",description:"User ke baare me kaam ki baat yaad rakho",parameters:{type:"OBJECT",properties:{fact:{type:"STRING"}},required:["fact"]}}];
 async function runTool(n,a){a=a||{};
  switch(n){
- case"open_youtube":return openUrl(a.query?"https://www.youtube.com/results?search_query="+encodeURIComponent(a.query):"https://www.youtube.com/");
+ case"open_youtube":if(NA)return await na("youtube",{query:a.query||"",play:false});return openUrl(a.query?"https://www.youtube.com/results?search_query="+encodeURIComponent(a.query):"https://www.youtube.com/");
+ case"youtube_play":return await na("youtube",{query:a.query||"",play:true});
+ case"open_app":return await na("openApp",{name:a.name||""});
+ case"media_control":return await na("media",{action:a.action||"toggle"});
+ case"read_screen":return await na("screen");
+ case"look_screen":{if(!NA)return "Ye kaam sirf Nyra app (APK) me chalta hai.";try{const r=await NA.screenshot();if(!r.ok)return r.msg;if(live&&ws&&ws.readyState===1)ws.send(JSON.stringify({realtimeInput:{video:{data:r.data,mimeType:"image/jpeg"}}}));return "screenshot bhej diya, ab screen dekh ke batao"}catch(e){return "error: "+(e&&e.message||e)}}
+ case"tap_text":return await na("tapText",{text:a.text||""});
+ case"tap_position":return await na("tapXY",{x:+a.x,y:+a.y});
+ case"scroll_screen":return await na("scroll",{direction:a.direction||"down"});
+ case"press_key":return await na("press",{key:a.key||"back"});
+ case"type_text":return await na("typeText",{text:a.text||""});
  case"open_link":return /^https:\/\//i.test(a.url||"")?openUrl(a.url):"sirf https link khulte hain";
  case"open_camera":return (await needCam())?"camera chalu":"camera nahi khula, permission chahiye";
  case"close_camera":tab("home");return "camera band";
@@ -372,7 +394,7 @@ $("txt").onkeydown=e=>{if(e.key==="Enter")$("send").click()};
 document.querySelectorAll("[data-say]").forEach(b=>b.onclick=()=>{tab("chat");go(b.dataset.say)});
 
 /* memory */
-const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna, camera kholna/band karna/palatna, photo kheenchna, video record karna, tab badalna, link kholna aur yaad rakhna. User ye kaam bole to turant tool chalao aur chhota jawab do. Camera khula ho to tum live dekh sakti ho, jo dikhe use batao.";
+const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna aur gaana/video apne aap chalana (youtube_play), koi bhi app kholna, gaana pause/next/volume, phone ki screen padhna ya screenshot se dekhna, screen par tap/scroll/type karna, back/home dabana, camera kholna/band karna/palatna, photo kheenchna, video record karna, tab badalna, link kholna aur yaad rakhna. User ye kaam bole to turant tool chalao aur chhota jawab do. Kisi app ke andar kaam karna ho to pehle read_screen se dekho kya hai, phir tap_text se aage badho. Camera khula ho to tum live dekh sakti ho, jo dikhe use batao.";
 function mem(){try{return JSON.parse(localStorage.getItem("nyra_mem")||"[]")}catch(e){return[]}}
 function sysText(){const m=mem(),np=S.pe&&S.pe!=="main"&&PS[S.pe];return (np?"VOICE AND ACCENT, MOST IMPORTANT, apply to every single word you speak, in every language: "+PS[S.pe]+" Never drop this style, even for Hindi words. ":"")+"Tumhara naam "+(np?S.pe:S.name)+" hai. "+(np?"Tum ek AI assistant ho, phone call ki tarah chhote natural jawab do, Hinglish me. User beech me toke to turant ruk jao.":S.persona)+langTxt()+TOOLS_TXT+uTxt()+skTxt()+(m.length?" User ke baare me tumhe ye yaad hai: "+m.join("; ")+".":"")+($("auto").getAttribute("aria-pressed")==="true"?" User koi kaam ki baat bataye (naam, pasand, kaam, plan) to save_memory se yaad rakho.":"")}
 function memSave(a){try{localStorage.setItem("nyra_mem",JSON.stringify(a))}catch(e){}renderMem()}
@@ -405,6 +427,7 @@ async function start(){
   stat("Jud rahi hoon...");
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
   catch(e){stat("Mic ki ijazat chahiye");toast("Chrome me mic ki permission do");return}
+  if(NA)NA.fg({on:true}).catch(()=>{});
   actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();
   const mine=ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(S.key));
   mine.onopen=()=>mine.send(JSON.stringify({setup:{model:"models/"+S.model,generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:S.voice}}}},systemInstruction:{parts:[{text:sysText()}]},tools:[{functionDeclarations:FD}],inputAudioTranscription:{},outputAudioTranscription:{}}}));
@@ -437,6 +460,7 @@ function mic(){
 }
 function stop(fromClose){
   live=false;clearInterval(fT);if(cam)camMsg();
+  if(NA)NA.fg({on:false}).catch(()=>{});
   try{proc&&proc.disconnect();src&&src.disconnect()}catch(e){}
   stream&&stream.getTracks().forEach(t=>t.stop());
   stopPlay();try{actx&&actx.close()}catch(e){}
