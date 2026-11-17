@@ -508,7 +508,7 @@ async function start(){
     if(ws!==mine)return;
     let d=e.data;if(d instanceof Blob)d=await d.text();
     let m;try{m=JSON.parse(d)}catch(x){return}
-    if(m.setupComplete){live=true;lastOk=Date.now();mic();calls(1);toast("Awaaz: "+S.voice);clearInterval(fT);fT=setInterval(sendFrame,1000);if(cam)camMsg();$("call").classList.add("on");$("call").innerHTML='<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">'+P.end+'</svg>';stat("Sun rahi hoon");return}
+    if(m.setupComplete){live=true;lastOk=Date.now();if(NA)NA.liveCfg({key:S.key,setup:setupMsg()}).catch(()=>{});mic();calls(1);toast("Awaaz: "+S.voice);clearInterval(fT);fT=setInterval(sendFrame,1000);if(cam)camMsg();$("call").classList.add("on");$("call").innerHTML='<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">'+P.end+'</svg>';stat("Sun rahi hoon");return}
     if(m.toolCall){const rs=[];for(const f of m.toolCall.functionCalls||[]){let r;try{r=await runTool(f.name,f.args)}catch(x){r="error: "+(x&&x.message||x)}toast(f.name+": "+String(r).split("\n")[0].slice(0,70));rs.push({id:f.id,name:f.name,response:{result:r}})}if(ws&&ws.readyState===1)ws.send(JSON.stringify({toolResponse:{functionResponses:rs}}));return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlay();curA=null}
@@ -533,7 +533,7 @@ function mic(){
 }
 function stop(fromClose,keep){
   live=false;clearInterval(fT);clearInterval(kA);if(cam)camMsg();
-  if(NA){NA.orb({talk:false}).catch(()=>{});if(!keep){NA.fg({on:false}).catch(()=>{});NA.wake({action:"resume"}).catch(()=>{})}}
+  if(NA){NA.orb({talk:false}).catch(()=>{});if(!keep){NA.liveCfg({clear:true}).catch(()=>{});NA.fg({on:false}).catch(()=>{});NA.wake({action:"resume"}).catch(()=>{})}}
   try{proc&&proc.disconnect();src&&src.disconnect()}catch(e){}
   stream&&stream.getTracks().forEach(t=>t.stop());
   stopPlay();try{actx&&actx.close()}catch(e){}
@@ -545,7 +545,7 @@ function stop(fromClose,keep){
 /* app peeche jaye to call native (mic+speaker WebView ke bina) ko de do, wapas aaye to wapas le lo */
 let bgH=false;
 window.nyraBg=async on=>{if(!NA)return;
-  if(on){if(!live||!ws||bgH)return;bgH=true;const msg=setupMsg();want=false;stop(false,true);try{await NA.liveStart({key:S.key,setup:msg});toast("Background me Nyra sun rahi hai")}catch(e){bgH=false}}
+  if(on){if(!live||bgH)return;bgH=true;want=false;stop(false,true)}
   else{if(!bgH)return;bgH=false;try{await NA.liveStop()}catch(e){}want=true;retry=0;start()}};
 $("call").onclick=()=>{if(live||ws){want=false;stop()}else{want=true;retry=0;start()}};
 /* ===== "Hey Nyra" wake-word + offline commands (sab phone par, Vosk Hindi model) ===== */
