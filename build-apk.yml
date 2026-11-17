@@ -129,7 +129,7 @@ jobs:
               private final Runnable pk = new Runnable() { @Override public void run() { poke(); } };
               private final Runnable hand = new Runnable() {
                   @Override public void run() {
-                      if (!visible && NyraService.running && NyraLive.cfgSetup != null && !NyraLive.on) {
+                      if (!visible && NyraLive.cfgSetup != null && !NyraLive.on) {
                           NyraLive.start(MainActivity.this, NyraLive.cfgKey, NyraLive.cfgSetup);
                           js("window.nyraBg&&window.nyraBg(true)");
                       }
@@ -201,6 +201,17 @@ jobs:
                       hd.removeCallbacks(hand);
                       hd.postDelayed(hand, 1200);
                       NyraService.showOrb(true);
+                  }
+                  if (NyraLive.cfgSetup != null) {
+                      /* app abhi bhi aage hai, isliye mic wali foreground service yahin pakka chalu karo */
+                      try {
+                          Intent s = new Intent(this, NyraService.class);
+                          if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(s); else startService(s);
+                      } catch (Exception e) {
+                          android.widget.Toast.makeText(this, "Nyra service nahi chali: " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                      }
+                      hd.removeCallbacks(hand);
+                      hd.postDelayed(hand, 800);
                   }
               }
 
@@ -1429,6 +1440,20 @@ jobs:
                       at = t;
                       final AudioRecord ra = a;
                       final AudioTrack rt = t;
+                      final AudioRecord chk = a;
+                      ex.execute(new Runnable() {
+                          @Override public void run() {
+                              try {
+                                  Thread.sleep(2500);
+                                  if (android.os.Build.VERSION.SDK_INT >= 29 && on && ar == chk) {
+                                      android.media.AudioManager am = (android.media.AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+                                      for (android.media.AudioRecordingConfiguration c : am.getActiveRecordingConfigurations()) {
+                                          if (c.getClientAudioSessionId() == chk.getAudioSessionId() && c.isClientSilenced()) say("Android ne mic silent kar diya (foreground service nahi chal rahi)");
+                                      }
+                                  }
+                              } catch (Throwable e) {}
+                          }
+                      });
                       new Thread(new Runnable() {
                           @Override public void run() {
                               short[] b = new short[1600];
@@ -1556,6 +1581,7 @@ jobs:
                           wl.acquire(6 * 60 * 60 * 1000L);
                       }
                   } catch (Exception e) {
+                      try { android.widget.Toast.makeText(this, "Nyra service nahi chali: " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show(); } catch (Exception x) {}
                       stopSelf();
                   }
                   return START_STICKY;
