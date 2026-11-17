@@ -285,7 +285,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms)),fc=document.createElement("canva
 function camMsg(){$("vs").textContent=live?"Nyra dekh rahi hai. Bolo: ye kya hai?":"Camera chalu hai. Call chalao, phir Nyra dekh payegi."}
 const NP=(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform()&&window.Capacitor.registerPlugin)?window.Capacitor.registerPlugin("NyraPerms"):null;
 const NA=NP?window.Capacitor.registerPlugin("NyraActions"):null;
-async function na(m,args){if(!NA)return "Ye kaam sirf Nyra app (APK) me chalta hai.";try{const r=await NA[m](args||{});return r&&r.msg!=null?r.msg:JSON.stringify(r)}catch(e){return "error: "+(e&&e.message||e)}}
+async function na(m,args){if(!NA)return "Ye kaam sirf Nyra app (APK) me chalta hai.";try{const r=await NA[m](args||{});return r&&r.msg!=null?r.msg:JSON.stringify(r)}catch(e){const t=String(e&&e.message||e);return /not implemented|not available/i.test(t)?"Is APK me naya plugin nahi hai. GitHub me build dobara chalao aur naya APK install karo.":"error: "+t}}
 let camTok=0;
 function stopCam(){recStop();if(cam){cam.getTracks().forEach(t=>{t.onended=null;t.stop()});cam=null}$("vid").srcObject=null}
 function camOff(){camTok++;stopCam()}
@@ -396,7 +396,8 @@ document.querySelectorAll("[data-say]").forEach(b=>b.onclick=()=>{tab("chat");go
 /* memory */
 const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna aur gaana/video apne aap chalana (youtube_play), koi bhi app kholna, gaana pause/next/volume, phone ki screen padhna ya screenshot se dekhna, screen par tap/scroll/type karna, back/home dabana, camera kholna/band karna/palatna, photo kheenchna, video record karna, tab badalna, link kholna aur yaad rakhna. User ye kaam bole to turant tool chalao aur chhota jawab do. Kisi app ke andar kaam karna ho to pehle read_screen se dekho kya hai, phir tap_text se aage badho. Camera khula ho to tum live dekh sakti ho, jo dikhe use batao.";
 function mem(){try{return JSON.parse(localStorage.getItem("nyra_mem")||"[]")}catch(e){return[]}}
-function sysText(){const m=mem(),np=S.pe&&S.pe!=="main"&&PS[S.pe];return (np?"VOICE AND ACCENT, MOST IMPORTANT, apply to every single word you speak, in every language: "+PS[S.pe]+" Never drop this style, even for Hindi words. ":"")+"Tumhara naam "+(np?S.pe:S.name)+" hai. "+(np?"Tum ek AI assistant ho, phone call ki tarah chhote natural jawab do, Hinglish me. User beech me toke to turant ruk jao.":S.persona)+langTxt()+TOOLS_TXT+uTxt()+skTxt()+(m.length?" User ke baare me tumhe ye yaad hai: "+m.join("; ")+".":"")+($("auto").getAttribute("aria-pressed")==="true"?" User koi kaam ki baat bataye (naam, pasand, kaam, plan) to save_memory se yaad rakho.":"")}
+const GRAM=" BOLNE KA TARIKA: Hamesha ladki ki tarah feminine grammar use karo (kar rahi hoon, khol rahi hoon, dekh rahi hoon, gayi, aayi), kabhi raha hoon, karta hoon, gaya nahi. Har vaakya poora aur saaf bolo. Adhure ya tute shabd, le-de-ke jaise faltu filler aur ek hi shabd baar baar mat bolo. Tool ke result sirf data hote hain, unhe apne shabdon me feminine grammar me batao.";
+function sysText(){const m=mem(),np=S.pe&&S.pe!=="main"&&PS[S.pe];return (np?"VOICE AND ACCENT, MOST IMPORTANT, apply to every single word you speak, in every language: "+PS[S.pe]+" Never drop this style, even for Hindi words. ":"")+"Tumhara naam "+(np?S.pe:S.name)+" hai. "+(np?"Tum ek AI assistant ho, phone call ki tarah chhote natural jawab do, Hinglish me. User beech me toke to turant ruk jao.":S.persona)+GRAM+langTxt()+TOOLS_TXT+uTxt()+skTxt()+(m.length?" User ke baare me tumhe ye yaad hai: "+m.join("; ")+".":"")+($("auto").getAttribute("aria-pressed")==="true"?" User koi kaam ki baat bataye (naam, pasand, kaam, plan) to save_memory se yaad rakho.":"")}
 function memSave(a){try{localStorage.setItem("nyra_mem",JSON.stringify(a))}catch(e){}renderMem()}
 function renderMem(){const l=$("mlist");l.innerHTML="";const a=mem();
   if(!a.length){l.innerHTML='<div style="color:var(--dim);font-size:15px;line-height:1.45">Abhi khaali hai. Neeche likho ya bolo "ye yaad rakhna".</div>';return}
@@ -436,7 +437,7 @@ async function start(){
     let d=e.data;if(d instanceof Blob)d=await d.text();
     let m;try{m=JSON.parse(d)}catch(x){return}
     if(m.setupComplete){live=true;mic();calls(1);toast("Awaaz: "+S.voice);clearInterval(fT);fT=setInterval(sendFrame,1000);if(cam)camMsg();$("call").classList.add("on");$("call").innerHTML='<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">'+P.end+'</svg>';stat("Sun rahi hoon");return}
-    if(m.toolCall){const rs=[];for(const f of m.toolCall.functionCalls||[]){let r;try{r=await runTool(f.name,f.args)}catch(x){r="error"}rs.push({id:f.id,name:f.name,response:{result:r}})}if(ws&&ws.readyState===1)ws.send(JSON.stringify({toolResponse:{functionResponses:rs}}));return}
+    if(m.toolCall){const rs=[];for(const f of m.toolCall.functionCalls||[]){let r;try{r=await runTool(f.name,f.args)}catch(x){r="error: "+(x&&x.message||x)}toast(f.name+": "+String(r).split("\n")[0].slice(0,70));rs.push({id:f.id,name:f.name,response:{result:r}})}if(ws&&ws.readyState===1)ws.send(JSON.stringify({toolResponse:{functionResponses:rs}}));return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlay();curA=null}
     if(c.modelTurn)for(const p of c.modelTurn.parts||[])if(p.inlineData&&p.inlineData.data)play(unb64(p.inlineData.data));
@@ -781,7 +782,13 @@ async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))r
     const okBat=!NP||pmSt.battery;
     all.style.display="none";nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;
     ht.textContent="\"Baaki hai\" wali row par tap karo, uski system screen khulegi \u2014 kaam hone par yahan wapas aao. Inme se koi bhi baad me Menu > Permissions me badal sakte ho.";
-    nx.onclick=done}
+    nx.onclick=done;
+    const tb=document.createElement("div");tb.style.cssText="display:flex;gap:8px;margin-top:12px";
+    [["Test: YouTube","youtube_play",{query:"arijit singh songs"}],["Test: Screen padho","read_screen",{}]].forEach(([t,n,a])=>{const b=document.createElement("button");b.className="skb";b.style.flex="1";b.textContent=t;b.onclick=async()=>{ht.textContent="Chal raha hai...";const r=await runTool(n,a);ht.textContent=String(r).slice(0,300)};tb.appendChild(b)});
+    c.appendChild(tb);
+    const ai=document.createElement("button");ai.className="skb";ai.style.cssText="width:100%;margin-top:10px";ai.textContent="Restricted setting hai? App info kholo";
+    ai.onclick=()=>{if(NP)NP.openSetting({name:"appinfo"});ht.textContent="Upar kone ke teen dot (\u22ee) dabao > Allow restricted settings. Phir wapas Accessibility me Nyra on karo."};
+    c.appendChild(ai)}
   sp.appendChild(c);icons()}
 function pmBack(){const sp=$("s-page");if(sp.querySelector(".pml"))pmRender()}
 document.addEventListener("resume",pmBack);window.addEventListener("focus",pmBack);
