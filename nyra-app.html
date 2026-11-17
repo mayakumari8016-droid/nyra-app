@@ -501,7 +501,7 @@ async function start(){
   if(NA)NA.wake({action:"pause"}).catch(()=>{});
   actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();actx.onstatechange=()=>{if(live&&actx&&actx.state!=="running")actx.resume().catch(()=>{})};
   clearInterval(kA);kA=setInterval(()=>{if(actx&&actx.state!=="running")actx.resume().catch(()=>{})},1500);
-  if(NP)NP.status().then(x=>{if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
+  if(NP)NP.status().then(x=>{if(!x.notif){NP.request({name:"notif"}).catch(()=>{});toast("Nyra ki notification allow karo, nahi to Oppo background me Nyra band kar deta hai")}else if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
   const mine=ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(S.key));
   mine.onopen=()=>mine.send(setupMsg());
   mine.onmessage=async e=>{
@@ -547,7 +547,35 @@ let bgH=false;
 window.nyraBg=async on=>{if(!NA)return;
   if(on){if(!live||bgH)return;bgH=true;want=false;stop(false,true)}
   else{if(!bgH)return;bgH=false;try{await NA.liveStop()}catch(e){}want=true;retry=0;start()}};
-$("call").onclick=()=>{if(live||ws){want=false;stop()}else{want=true;retry=0;start()}};
+/* ===== call se pehle: jo permission baaki hai, ek ek karke Hindi me batao aur seedha sahi jagah khol do ===== */
+function pgUI(t,d,b,skip){return new Promise(res=>{let o=document.getElementById("pgd");
+  if(!o){o=document.createElement("div");o.id="pgd";o.style.cssText="position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;background:rgba(5,8,20,.85);display:flex;align-items:center;justify-content:center;padding:22px";document.body.appendChild(o)}
+  o.innerHTML='<div style="background:#fff;color:#14213d;border-radius:22px;padding:22px;max-width:380px;width:100%;font:16px/1.55 system-ui,sans-serif"><b style="font-size:20px;display:block;margin-bottom:8px"></b><p style="margin:0 0 18px;white-space:pre-line"></p><button id="pgok" style="width:100%;height:54px;border:0;border-radius:16px;background:#2f6fe0;color:#fff;font-size:18px;font-weight:600"></button><button id="pgsk" style="width:100%;height:44px;margin-top:8px;border:0;background:none;color:#6b7694;font-size:15px"></button></div>';
+  o.querySelector("b").textContent=t;o.querySelector("p").textContent=d;o.querySelector("#pgok").textContent=b;o.querySelector("#pgsk").textContent=skip||"Baad me";
+  o.querySelector("#pgok").onclick=()=>res(true);o.querySelector("#pgsk").onclick=()=>res(false)})}
+async function permGuide(){
+  const steps=[
+    ["mic","1. Microphone allow karo","Nyra tumhari awaaz sun sake, iske liye. Abhi ek popup aayega, usme 'Allow' ya 'While using the app' dabao.","Allow karo"],
+    ["notif","2. Notification allow karo","Iske bina Oppo phone background me Nyra ko band kar deta hai. Popup aaye to 'Allow' dabao.","Allow karo"],
+    ["battery","3. Battery optimisation band karo","Iske bina screen band hote hi Nyra chup ho jaati hai. Jo screen khule usme 'Allow' ya 'Unrestricted' dabao.","Settings kholo"],
+    ["overlay","4. Dusre apps ke upar dikhna","Iske bina background me Nyra YouTube jaise apps nahi khol paayegi. List me 'Nyra' dhoondo aur switch ON karo, phir wapas aao.","Settings kholo"],
+    ["allfiles","5. Phone storage allow karo (data safe rakhne ke liye)","Isse tumhari API key, yaadein, skills aur rules phone ke 'Nyra' folder me apne aap save hote rehte hain. App delete karne par bhi ye bache rahenge aur dobara install karte hi wapas aa jayenge. Jo screen khule usme Nyra ke aage 'Allow access to manage all files' ON karo.","Settings kholo"]];
+  try{
+    await pmCheck();
+    for(const s of steps){
+      if(pmSt[s[0]])continue;
+      if(!await pgUI(s[1],s[2],s[3],"Abhi nahi")){sessionStorage.setItem("nyra_pgs","1");return}
+      const m=PMS.find(p=>p[0]===s[0]);const w=m[4]==="set"?pmRet():null;
+      await pmAsk(m);if(w)await w;await pmCheck()}
+    if(pmSt.allfiles)restoreAll();
+    if(!localStorage.getItem("nyra_oppo")){
+      if(await pgUI("6. Phone ki apni setting (Oppo / Realme / Vivo / Xiaomi)","Ab jo App info screen khule usme ye teen kaam karo:\n\u2022 'Battery' ya 'Battery usage' me jao > 'Allow background activity' ON\n\u2022 'Auto-launch' / 'Autostart' ON\n\u2022 Notifications ON hain ye dekho\nPhir wapas aao. Ye sirf ek baar poochha jayega.","App info kholo","Ho chuka / Nahi chahiye")){
+        const w=pmRet();try{await NP.openSetting({name:"appinfo"})}catch(e){}await w}
+      localStorage.setItem("nyra_oppo","1")}
+  }catch(e){}
+  const o=document.getElementById("pgd");if(o)o.remove()}
+async function guideOnce(){if(NP&&!sessionStorage.getItem("nyra_pgs"))await permGuide()}
+$("call").onclick=()=>{if(live||ws){want=false;stop()}else{want=true;retry=0;guideOnce().then(()=>start())}};
 /* ===== "Hey Nyra" wake-word + offline commands (sab phone par, Vosk Hindi model) ===== */
 window.nyraWake=async()=>{if(!NA)return;try{const r=await NA.wakePending();if(r&&r.pending&&!live&&!ws){want=true;retry=0;start()}}catch(e){}};
 async function wakeApply(){if(!NA){wkSt();return}try{const r=T.wk?await NA.wake({action:"on",offline:T.wko!==false}):await NA.wake({action:"off"});if(r&&r.ok===false)toast(r.msg);if(T.wk&&r&&r.ok===false){T.wk=false;tSave();document.querySelectorAll('[data-tg="wk"]').forEach(b=>b.setAttribute("aria-pressed","false"))}}catch(e){}setTimeout(wkSt,1500)}
@@ -904,7 +932,20 @@ function bkSet(){if(!NA||(localStorage.getItem("nyra_t")&&localStorage.getItem("
   if(!localStorage.getItem("nyra_ls")&&o.LS){LS=o.LS;try{localStorage.setItem("nyra_ls",JSON.stringify(LS))}catch(e){}}
   if(o.P){let ch=false;for(const k of["un","g","fs","ma"])if(!U[k]&&o.P[k]){U[k]=o.P[k];ch=true}if(ch){try{localStorage.setItem("nyra_p",JSON.stringify(U))}catch(e){}$("hn").textContent=U.un||"dost"}}
   npFill()}catch(e){}}).catch(()=>{})}
-function bkRestore(){bkTasks();bkMem();bkSet()}
+/* ===== sab kuch apne aap save: phone ke Nyra folder me (app delete ho tab bhi bacha rahe) ===== */
+const BK_SKIP=["nyra_calls","nyra_pm"];
+function bkSnap(){const o={};try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(/^nyra/.test(k)&&!BK_SKIP.includes(k))o[k]=localStorage.getItem(k)}}catch(e){}return JSON.stringify(o)}
+let bkLast="";
+function bkAll(force){if(!NA||!S.key)return;const s=bkSnap();if(!force&&s===bkLast)return;bkLast=s;NA.saveFile({name:"nyra-all.json",data:s}).catch(()=>{})}
+setInterval(()=>bkAll(),6000);
+document.addEventListener("visibilitychange",()=>{if(document.hidden)bkAll()});
+window.addEventListener("pagehide",()=>bkAll(true));
+async function restoreAll(){if(!NA||S.key||sessionStorage.getItem("nyra_rst"))return;
+  try{const r=await NA.loadFile({name:"nyra-all.json"});if(!(r&&r.ok&&r.data))return;const o=JSON.parse(r.data);
+    if(!o.nyra||!JSON.parse(o.nyra).key)return;
+    for(const k in o)if(/^nyra/.test(k)&&!BK_SKIP.includes(k)){try{localStorage.setItem(k,o[k])}catch(e){}}
+    sessionStorage.setItem("nyra_rst","1");toast("Purana data wapas aa gaya");setTimeout(()=>location.reload(),600)}catch(e){}}
+function bkRestore(){bkTasks();bkMem();bkSet();restoreAll()}
 bkRestore();
 if(T.wk&&!PM_FIRST)wakeApply();else wkSt();
 setTimeout(()=>window.nyraWake&&window.nyraWake(),900);
