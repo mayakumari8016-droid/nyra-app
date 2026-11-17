@@ -491,6 +491,7 @@ function play(b){
   $("orb").classList.add("talk");nOrb(true);stat("Bol rahi hoon");
 }
 function stopPlay(){srcs.forEach(s=>{try{s.stop()}catch(e){}});srcs=[];playT=0;$("orb").classList.remove("talk");nOrb(false)}
+function setupMsg(){return JSON.stringify({setup:{model:"models/"+S.model,generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:S.voice}}}},systemInstruction:{parts:[{text:sysText()}]},tools:[{functionDeclarations:FD}],inputAudioTranscription:{},outputAudioTranscription:{}}})}
 async function start(){
   if(!S.key){ppOpen(true);return}
   stat("Jud rahi hoon...");
@@ -502,7 +503,7 @@ async function start(){
   clearInterval(kA);kA=setInterval(()=>{if(actx&&actx.state!=="running")actx.resume().catch(()=>{})},1500);
   if(NP)NP.status().then(x=>{if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
   const mine=ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(S.key));
-  mine.onopen=()=>mine.send(JSON.stringify({setup:{model:"models/"+S.model,generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:S.voice}}}},systemInstruction:{parts:[{text:sysText()}]},tools:[{functionDeclarations:FD}],inputAudioTranscription:{},outputAudioTranscription:{}}}));
+  mine.onopen=()=>mine.send(setupMsg());
   mine.onmessage=async e=>{
     if(ws!==mine)return;
     let d=e.data;if(d instanceof Blob)d=await d.text();
@@ -541,6 +542,11 @@ function stop(fromClose,keep){
   $("call").classList.remove("on");$("call").innerHTML="";$("call").insertAdjacentHTML("afterbegin",'<i data-ic="mic" data-sz="34"></i>');icons();
   stat("Call chalane ke liye neeche neela button dabao");
 }
+/* app peeche jaye to call native (mic+speaker WebView ke bina) ko de do, wapas aaye to wapas le lo */
+let bgH=false;
+window.nyraBg=async on=>{if(!NA)return;
+  if(on){if(!live||!ws||bgH)return;bgH=true;const msg=setupMsg();want=false;stop(false,true);try{await NA.liveStart({key:S.key,setup:msg});toast("Background me Nyra sun rahi hai")}catch(e){bgH=false}}
+  else{if(!bgH)return;bgH=false;try{await NA.liveStop()}catch(e){}want=true;retry=0;start()}};
 $("call").onclick=()=>{if(live||ws){want=false;stop()}else{want=true;retry=0;start()}};
 /* ===== "Hey Nyra" wake-word + offline commands (sab phone par, Vosk Hindi model) ===== */
 window.nyraWake=async()=>{if(!NA)return;try{const r=await NA.wakePending();if(r&&r.pending&&!live&&!ws){want=true;retry=0;start()}}catch(e){}};

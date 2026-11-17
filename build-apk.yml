@@ -108,7 +108,7 @@ jobs:
           du -sh android/app/src/main/assets/model-hi
       - name: Vosk library jodo
         run: |
-          sed -i '/^dependencies {/a\    implementation "com.alphacephei:vosk-android:0.3.47"\n    implementation "net.java.dev.jna:jna:5.13.0@aar"' android/app/build.gradle
+          sed -i '/^dependencies {/a\    implementation "com.alphacephei:vosk-android:0.3.47"\n    implementation "net.java.dev.jna:jna:5.13.0@aar"\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"' android/app/build.gradle
           grep -n "vosk\|jna" android/app/build.gradle
       - name: Native permission plugin aur services
         run: |
@@ -127,6 +127,14 @@ jobs:
               private final Handler hd = new Handler(Looper.getMainLooper());
               private boolean visible = true;
               private final Runnable pk = new Runnable() { @Override public void run() { poke(); } };
+              private final Runnable hand = new Runnable() {
+                  @Override public void run() {
+                      if (!visible && NyraService.running) js("window.nyraBg&&window.nyraBg(true)");
+                  }
+              };
+              private void js(String s) {
+                  try { getBridge().getWebView().evaluateJavascript(s, null); } catch (Exception e) {}
+              }
               private final Runnable keep = new Runnable() {
                   @Override public void run() {
                       if (!visible && NyraService.running) {
@@ -187,6 +195,8 @@ jobs:
                       poke();
                       hd.removeCallbacks(keep);
                       hd.postDelayed(keep, 150);
+                      hd.removeCallbacks(hand);
+                      hd.postDelayed(hand, 1200);
                       NyraService.showOrb(true);
                   }
               }
@@ -208,6 +218,8 @@ jobs:
                   NyraLaunch.appVisible = true;
                   NyraLaunch.clear(this);
                   hd.removeCallbacks(keep);
+                  hd.removeCallbacks(hand);
+                  hd.postDelayed(new Runnable() { @Override public void run() { js("window.nyraBg&&window.nyraBg(false)"); } }, 300);
                   NyraService.showOrb(false);
                   NyraSecure.ensure(this);
                   wakeJs();
@@ -1008,6 +1020,18 @@ jobs:
               }
 
               @PluginMethod
+              public void liveStart(PluginCall call) {
+                  NyraLive.start(getContext(), call.getString("key", ""), call.getString("setup", ""));
+                  call.resolve(res(true, "background call chalu"));
+              }
+
+              @PluginMethod
+              public void liveStop(PluginCall call) {
+                  NyraLive.stop();
+                  call.resolve(res(true, "ok"));
+              }
+
+              @PluginMethod
               public void fg(PluginCall call) {
                   try {
                       Intent i = new Intent(getContext(), NyraService.class);
@@ -1089,6 +1113,331 @@ jobs:
                   } catch (Exception e) {
                       try { c.startActivity(i); } catch (Exception e2) {}
                   }
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraTools.java <<'EOF'
+          package com.nyra.app;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.ApplicationInfo;
+          import android.content.pm.PackageManager;
+          import android.media.AudioManager;
+          import android.net.Uri;
+          import android.view.KeyEvent;
+          import org.json.JSONObject;
+
+          /* Background me (app band/peeche) Gemini ke tool calls yahan chalte hain */
+          public class NyraTools {
+              private static final String NOACC = "Accessibility service on nahi hai. Menu > Permissions me Accessibility me Nyra on karo.";
+
+              private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) {} }
+
+              public static String run(Context c, String n, JSONObject a) {
+                  try {
+                      NyraAccessibility ac = NyraAccessibility.inst;
+                      switch (n) {
+                          case "open_youtube": return yt(c, a.optString("query", ""), false);
+                          case "youtube_play": return yt(c, a.optString("query", ""), true);
+                          case "open_app": return app(c, a.optString("name", ""));
+                          case "media_control": return media(c, a.optString("action", "toggle"));
+                          case "open_link": {
+                              String u = a.optString("url", "");
+                              if (!u.startsWith("https://")) return "sirf https link khulte hain";
+                              NyraLaunch.go(c, new Intent(Intent.ACTION_VIEW, Uri.parse(u)), "Link", "Kholne ke liye dabao", false);
+                              return "link khol diya";
+                          }
+                          case "read_screen": { if (ac == null) return NOACC; String d = ac.dump(); return d.isEmpty() ? "screen khaali ya padhi nahi ja saki" : d; }
+                          case "tap_text": { if (ac == null) return NOACC; boolean ok = ac.clickText(a.optString("text", "")); return ok ? "tap kar diya" : "screen par ye text nahi mila"; }
+                          case "tap_position": { if (ac == null) return NOACC; return ac.tap((float) a.optDouble("x", 0), (float) a.optDouble("y", 0)) ? "tap ho gaya" : "tap nahi hua"; }
+                          case "scroll_screen": { if (ac == null) return NOACC; return ac.scroll("down".equals(a.optString("direction", "down"))) ? "scroll ho gaya" : "scroll nahi hua"; }
+                          case "press_key": { if (ac == null) return NOACC; return ac.press(a.optString("key", "back")) ? "dab gaya" : "nahi daba"; }
+                          case "type_text": { if (ac == null) return NOACC; return ac.typeText(a.optString("text", "")) ? "likh diya" : "koi text box nahi mila"; }
+                          default: return "Ye kaam abhi background me nahi ho sakta. App kholo to ho jayega.";
+                      }
+                  } catch (Exception e) { return "error: " + e.getMessage(); }
+              }
+
+              private static String media(Context c, String a) {
+                  AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+                  int k = -1;
+                  switch (a) {
+                      case "play": k = KeyEvent.KEYCODE_MEDIA_PLAY; break;
+                      case "pause": k = KeyEvent.KEYCODE_MEDIA_PAUSE; break;
+                      case "toggle": k = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE; break;
+                      case "next": k = KeyEvent.KEYCODE_MEDIA_NEXT; break;
+                      case "previous": k = KeyEvent.KEYCODE_MEDIA_PREVIOUS; break;
+                      default: break;
+                  }
+                  if (k > 0) { am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, k)); am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, k)); }
+                  else if (a.equals("vol_up")) am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
+                  else if (a.equals("vol_down")) am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                  else if (a.equals("mute")) am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, AudioManager.FLAG_SHOW_UI);
+                  else return "galat action";
+                  return a + " ho gaya";
+              }
+
+              private static Intent findLaunch(PackageManager pm, String n, boolean exact) {
+                  for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                      Intent li = pm.getLaunchIntentForPackage(ai.packageName);
+                      if (li == null) continue;
+                      String l = String.valueOf(pm.getApplicationLabel(ai)).toLowerCase();
+                      if (exact ? l.equals(n) : l.contains(n)) return li;
+                  }
+                  return null;
+              }
+
+              private static String app(Context c, String name) {
+                  String n = name.trim().toLowerCase();
+                  if (n.isEmpty()) return "app ka naam batao";
+                  PackageManager pm = c.getPackageManager();
+                  Intent i = null;
+                  if (n.contains(".")) i = pm.getLaunchIntentForPackage(n);
+                  if (i == null) i = findLaunch(pm, n, true);
+                  if (i == null) i = findLaunch(pm, n, false);
+                  if (i == null) return n + " naam ka app nahi mila";
+                  boolean bl = NyraLaunch.blocked(c);
+                  NyraLaunch.go(c, i, n, n + " kholne ke liye dabao", false);
+                  return bl ? "Android ne background se roka, notification aayi hai, user dabaye" : n + " khul gaya";
+              }
+
+              private static String videoId(String q) {
+                  try {
+                      java.net.URL url = new java.net.URL("https://www.youtube.com/results?search_query=" + Uri.encode(q) + "&sp=EgIQAQ%253D%253D");
+                      java.net.HttpURLConnection h = (java.net.HttpURLConnection) url.openConnection();
+                      h.setConnectTimeout(8000);
+                      h.setReadTimeout(8000);
+                      h.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+                      h.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+                      h.setRequestProperty("Cookie", "CONSENT=YES+1; SOCS=CAI");
+                      java.io.InputStream in = h.getInputStream();
+                      java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                      byte[] buf = new byte[16384];
+                      int k, total = 0;
+                      while ((k = in.read(buf)) > 0 && total < 1500000) { bo.write(buf, 0, k); total += k; }
+                      in.close();
+                      String s = bo.toString("UTF-8");
+                      java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(s);
+                      if (m.find()) return m.group(1);
+                      m = java.util.regex.Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(s);
+                      if (m.find()) return m.group(1);
+                  } catch (Exception e) {}
+                  return null;
+              }
+
+              private static String yt(Context c, String q, boolean play) {
+                  String vid = (play && !q.isEmpty()) ? videoId(q) : null;
+                  Uri u;
+                  if (vid != null) u = Uri.parse("https://www.youtube.com/watch?v=" + vid);
+                  else if (q.isEmpty()) u = Uri.parse("https://www.youtube.com/");
+                  else u = Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q));
+                  Intent i = new Intent(Intent.ACTION_VIEW, u);
+                  i.setPackage("com.google.android.youtube");
+                  if (i.resolveActivity(c.getPackageManager()) == null) i.setPackage(null);
+                  boolean bl = NyraLaunch.blocked(c);
+                  NyraLaunch.go(c, i, "YouTube", q.isEmpty() ? "YouTube kholne ke liye dabao" : q + " chalane ke liye dabao", false);
+                  if (bl) return "Android ne background se roka, notification aayi hai, user dabaye";
+                  if (!play || q.isEmpty()) return "YouTube khul gaya";
+                  if (vid != null) return "video seedha chala diya: " + q;
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) return "YouTube search khul gaya, video chalane ke liye Accessibility on chahiye";
+                  sleep(3500);
+                  boolean ok = false;
+                  for (int k = 0; k < 8 && !ok; k++) {
+                      a = NyraAccessibility.inst;
+                      if (a != null) ok = a.clickFirstVideo();
+                      if (!ok) sleep(1000);
+                  }
+                  return ok ? "video chala diya: " + q : "search khul gaya par video nahi dabaya ja saka";
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraLive.java <<'EOF'
+          package com.nyra.app;
+          import android.content.Context;
+          import android.media.AudioAttributes;
+          import android.media.AudioFormat;
+          import android.media.AudioRecord;
+          import android.media.AudioTrack;
+          import android.media.MediaRecorder;
+          import android.util.Base64;
+          import java.nio.ByteBuffer;
+          import java.nio.ByteOrder;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.LinkedBlockingQueue;
+          import java.util.concurrent.TimeUnit;
+          import okhttp3.OkHttpClient;
+          import okhttp3.Request;
+          import okhttp3.Response;
+          import okhttp3.WebSocket;
+          import okhttp3.WebSocketListener;
+          import okio.ByteString;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          /* Background wali call: mic + speaker + Gemini Live socket sab native (WebView ke bina), isliye app peeche ho tab bhi chalti hai */
+          public class NyraLive {
+              public static volatile boolean on = false;
+              private static volatile boolean ready = false;
+              private static Context ctx;
+              private static String key, setup;
+              private static WebSocket ws;
+              private static AudioRecord ar;
+              private static AudioTrack at;
+              private static int tries = 0;
+              private static OkHttpClient cl;
+              private static final LinkedBlockingQueue<byte[]> q = new LinkedBlockingQueue<>();
+              private static final ExecutorService ex = Executors.newCachedThreadPool();
+
+              public static synchronized void start(Context c, String k, String s) {
+                  stop();
+                  ctx = c.getApplicationContext();
+                  key = k;
+                  setup = s;
+                  on = true;
+                  tries = 0;
+                  connect();
+              }
+
+              public static synchronized void stop() {
+                  on = false;
+                  ready = false;
+                  try { if (ws != null) ws.close(1000, null); } catch (Exception e) {}
+                  ws = null;
+                  closeAudio();
+                  q.clear();
+                  NyraService.talk(false);
+              }
+
+              private static void connect() {
+                  if (cl == null) cl = new OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).pingInterval(20, TimeUnit.SECONDS).build();
+                  Request r = new Request.Builder().url("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=" + android.net.Uri.encode(key)).build();
+                  ws = cl.newWebSocket(r, new WebSocketListener() {
+                      @Override public void onOpen(WebSocket w, Response r) { w.send(setup); }
+                      @Override public void onMessage(WebSocket w, String t) { handle(w, t); }
+                      @Override public void onMessage(WebSocket w, ByteString b) { handle(w, b.utf8()); }
+                      @Override public void onClosed(WebSocket w, int code, String reason) { lost(w); }
+                      @Override public void onFailure(WebSocket w, Throwable t, Response r) { lost(w); }
+                  });
+              }
+
+              private static void lost(final WebSocket w) {
+                  if (w != ws || !on) return;
+                  ready = false;
+                  closeAudio();
+                  if (tries++ < 3) {
+                      ex.execute(new Runnable() {
+                          @Override public void run() {
+                              try { Thread.sleep(1500); } catch (Exception e) {}
+                              if (on) connect();
+                          }
+                      });
+                  } else {
+                      on = false;
+                  }
+              }
+
+              private static void handle(final WebSocket w, String t) {
+                  try {
+                      JSONObject m = new JSONObject(t);
+                      if (m.has("setupComplete")) { ready = true; tries = 0; openAudio(); return; }
+                      if (m.has("toolCall")) {
+                          final JSONArray fc = m.getJSONObject("toolCall").optJSONArray("functionCalls");
+                          if (fc == null) return;
+                          ex.execute(new Runnable() {
+                              @Override public void run() {
+                                  try {
+                                      JSONArray out = new JSONArray();
+                                      for (int i = 0; i < fc.length(); i++) {
+                                          JSONObject f = fc.getJSONObject(i);
+                                          String r = NyraTools.run(ctx, f.optString("name"), f.optJSONObject("args") == null ? new JSONObject() : f.optJSONObject("args"));
+                                          out.put(new JSONObject().put("id", f.optString("id")).put("name", f.optString("name")).put("response", new JSONObject().put("result", r)));
+                                      }
+                                      w.send(new JSONObject().put("toolResponse", new JSONObject().put("functionResponses", out)).toString());
+                                  } catch (Exception e) {}
+                              }
+                          });
+                          return;
+                      }
+                      JSONObject sc = m.optJSONObject("serverContent");
+                      if (sc == null) return;
+                      if (sc.optBoolean("interrupted")) flush();
+                      JSONObject mt = sc.optJSONObject("modelTurn");
+                      if (mt != null) {
+                          JSONArray ps = mt.optJSONArray("parts");
+                          if (ps != null) for (int i = 0; i < ps.length(); i++) {
+                              JSONObject id = ps.getJSONObject(i).optJSONObject("inlineData");
+                              if (id != null && id.optString("data").length() > 0) {
+                                  q.offer(Base64.decode(id.getString("data"), Base64.DEFAULT));
+                                  NyraService.talk(true);
+                              }
+                          }
+                      }
+                      if (sc.optBoolean("turnComplete")) NyraService.talk(false);
+                  } catch (Exception e) {}
+              }
+
+              private static void flush() {
+                  q.clear();
+                  try { if (at != null) { at.pause(); at.flush(); at.play(); } } catch (Exception e) {}
+                  NyraService.talk(false);
+              }
+
+              private static synchronized void openAudio() {
+                  closeAudio();
+                  try {
+                      int min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                      AudioRecord a = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 3200) * 2);
+                      if (a.getState() != AudioRecord.STATE_INITIALIZED) {
+                          a.release();
+                          a = new AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 3200) * 2);
+                      }
+                      a.startRecording();
+                      ar = a;
+                      int tm = AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                      AudioTrack t = new AudioTrack.Builder()
+                          .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                          .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(24000).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                          .setBufferSizeInBytes(Math.max(tm, 9600) * 2)
+                          .setTransferMode(AudioTrack.MODE_STREAM).build();
+                      t.play();
+                      at = t;
+                      final AudioRecord ra = a;
+                      final AudioTrack rt = t;
+                      new Thread(new Runnable() {
+                          @Override public void run() {
+                              short[] b = new short[1600];
+                              while (on && ready && ar == ra) {
+                                  int n = ra.read(b, 0, b.length);
+                                  if (n <= 0) continue;
+                                  byte[] by = new byte[n * 2];
+                                  ByteBuffer.wrap(by).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(b, 0, n);
+                                  WebSocket w = ws;
+                                  if (w != null) w.send("{\"realtimeInput\":{\"audio\":{\"data\":\"" + Base64.encodeToString(by, Base64.NO_WRAP) + "\",\"mimeType\":\"audio/pcm;rate=16000\"}}}");
+                              }
+                          }
+                      }).start();
+                      new Thread(new Runnable() {
+                          @Override public void run() {
+                              while (on && ready && at == rt) {
+                                  try {
+                                      byte[] x = q.poll(300, TimeUnit.MILLISECONDS);
+                                      if (x != null) rt.write(x, 0, x.length);
+                                  } catch (Exception e) { break; }
+                              }
+                          }
+                      }).start();
+                  } catch (Throwable e) {}
+              }
+
+              private static synchronized void closeAudio() {
+                  AudioRecord a = ar;
+                  AudioTrack t = at;
+                  ar = null;
+                  at = null;
+                  try { if (a != null) { a.stop(); a.release(); } } catch (Exception e) {}
+                  try { if (t != null) { t.stop(); t.release(); } } catch (Exception e) {}
               }
           }
           EOF
@@ -1260,6 +1609,7 @@ jobs:
 
               @Override
               public void onDestroy() {
+                  NyraLive.stop();
                   setOrb(false);
                   try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception e) {}
                   wl = null;
