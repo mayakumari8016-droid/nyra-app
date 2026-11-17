@@ -1053,7 +1053,9 @@ jobs:
                       } else {
                           getContext().stopService(i);
                       }
-                  } catch (Exception e) {}
+                  } catch (Exception e) {
+                      NyraLive.say("Nyra service start nahi hui: " + e);
+                  }
                   call.resolve(res(true, "ok"));
               }
           }
@@ -1557,6 +1559,9 @@ jobs:
                           wl.acquire(6 * 60 * 60 * 1000L);
                       }
                   } catch (Exception e) {
+                      final android.content.Context cc = getApplicationContext();
+                      final String em = "Nyra service nahi chali: " + e;
+                      new Handler(Looper.getMainLooper()).post(new Runnable() { @Override public void run() { try { android.widget.Toast.makeText(cc, em, android.widget.Toast.LENGTH_LONG).show(); } catch (Exception x) {} } });
                       stopSelf();
                   }
                   return START_STICKY;
