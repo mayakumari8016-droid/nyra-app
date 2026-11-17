@@ -428,18 +428,32 @@ let hist=[];
 async function ask(t){
   if(!S.key){ppOpen(true);return}
   bub("u",t);const d=bub("a","...");hist.push({role:"user",parts:[{text:t}]});
-  try{const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key="+encodeURIComponent(S.key),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:sysText()}]},contents:hist})});
-    const j=await r.json(),a=(j.candidates&&j.candidates[0]&&j.candidates[0].content.parts.map(p=>p.text||"").join(""))||(j.error&&j.error.message)||"Jawab nahi mila";
-    d.textContent=a;if(j.candidates)hist.push({role:"model",parts:[{text:a}]});else hist.pop()}
+  const url="https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key="+encodeURIComponent(S.key);
+  const msgs=hist.slice();let out="",ok=false;
+  try{
+    for(let i=0;i<8;i++){
+      const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:sysText()}]},tools:[{functionDeclarations:FD}],contents:msgs})});
+      const j=await r.json(),cd=j.candidates&&j.candidates[0];
+      if(!cd||!cd.content){out=out||(j.error&&j.error.message)||"Jawab nahi mila";break}
+      ok=true;const parts=cd.content.parts||[];msgs.push({role:"model",parts});
+      const tx=parts.map(p=>p.text||"").join("");if(tx)out=tx;
+      const fc=parts.filter(p=>p.functionCall);if(!fc.length)break;
+      d.textContent=tx||"Kaam kar rahi hoon...";
+      const rs=[];for(const p of fc){let res;try{res=await runTool(p.functionCall.name,p.functionCall.args)}catch(x){res="error: "+(x&&x.message||x)}
+        toast(p.functionCall.name+": "+String(res).split("\n")[0].slice(0,70));
+        rs.push({functionResponse:{name:p.functionCall.name,response:{result:String(res)}}})}
+      msgs.push({role:"user",parts:rs})}
+    d.textContent=out||"Ho gaya";
+    if(ok)hist.push({role:"model",parts:[{text:d.textContent}]});else hist.pop()}
   catch(e){d.textContent="Network error, dobara try karo";hist.pop()}
   clog.scrollTop=clog.scrollHeight}
-function go(t){if(!t)return;if(live&&ws&&ws.readyState===1)say(t);else ask(t)}
+function go(t){if(!t)return;ask(t)}
 $("send").onclick=()=>{const v=$("txt").value.trim();if(v){$("txt").value="";go(v)}};
 $("txt").onkeydown=e=>{if(e.key==="Enter")$("send").click()};
 document.querySelectorAll("[data-say]").forEach(b=>b.onclick=()=>{tab("chat");go(b.dataset.say)});
 
 /* memory */
-const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna aur gaana/video apne aap chalana (youtube_play), koi bhi app kholna, gaana pause/next/volume, phone ki screen padhna ya screenshot se dekhna, screen par tap/scroll/type karna, back/home dabana, camera kholna/band karna/palatna, photo kheenchna, video record karna, tab badalna, link kholna aur yaad rakhna. User ye kaam bole to turant tool chalao aur chhota jawab do. Kisi app ke andar kaam karna ho to pehle read_screen se dekho kya hai, phir tap_text se aage badho. Camera khula ho to tum live dekh sakti ho, jo dikhe use batao.";
+const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna aur gaana/video apne aap chalana (youtube_play), koi bhi app kholna, gaana pause/next/volume, phone ki screen padhna ya screenshot se dekhna, screen par tap/scroll/type karna, back/home dabana, camera kholna/band karna/palatna, photo kheenchna, video record karna, tab badalna, link kholna aur yaad rakhna. User ye kaam bole to turant tool chalao aur chhota jawab do. Kisi app ke andar kaam karna ho to pehle read_screen se dekho kya hai, phir tap_text se aage badho. Camera khula ho to tum live dekh sakti ho, jo dikhe use batao. Kabhi mat bolo ki ye feature mere paas nahi hai: gaana ya video lagana youtube_play se hota hai, app kholna open_app se, aur chat me likha kaam bhi tools se hi karo.";
 function mem(){try{return JSON.parse(localStorage.getItem("nyra_mem")||"[]")}catch(e){return[]}}
 const GRAM=" BOLNE KA TARIKA: Hamesha ladki ki tarah feminine grammar use karo (kar rahi hoon, khol rahi hoon, dekh rahi hoon, gayi, aayi), kabhi raha hoon, karta hoon, gaya nahi. Har vaakya poora aur saaf bolo. Adhure ya tute shabd, le-de-ke jaise faltu filler aur ek hi shabd baar baar mat bolo. Tool ke result sirf data hote hain, unhe apne shabdon me feminine grammar me batao.";
 function sysText(){const m=mem(),np=S.pe&&S.pe!=="main"&&PS[S.pe];return (np?"VOICE AND ACCENT, MOST IMPORTANT, apply to every single word you speak, in every language: "+PS[S.pe]+" Never drop this style, even for Hindi words. ":"")+"Tumhara naam "+(np?S.pe:S.name)+" hai. "+(np?"Tum ek AI assistant ho, phone call ki tarah chhote natural jawab do, Hinglish me. User beech me toke to turant ruk jao.":S.persona)+GRAM+langTxt()+TOOLS_TXT+uTxt()+skTxt()+(m.length?" User ke baare me tumhe ye yaad hai: "+m.join("; ")+".":"")+($("auto").getAttribute("aria-pressed")==="true"?" User koi kaam ki baat bataye (naam, pasand, kaam, plan) to save_memory se yaad rakho.":"")}
