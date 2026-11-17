@@ -495,6 +495,7 @@ function setupMsg(){return JSON.stringify({setup:{model:"models/"+S.model,genera
 async function start(){
   if(!S.key){ppOpen(true);return}
   stat("Jud rahi hoon...");
+  await askBattery();
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
   catch(e){stat("Mic ki ijazat chahiye");toast("Chrome me mic ki permission do");return}
   if(NA)NA.fg({on:true}).catch(()=>{});
@@ -878,10 +879,14 @@ async function pmCheck(){
 async function pmAsk(m){
   const id=m[0];
   if(NP&&id==="allfiles"){try{pmSt=await NP.request({name:id});if(!pmSt.allfiles)await NP.openSetting({name:id})}catch(e){}return}
-  if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else if(id==="a11y"&&pmSt.secure){const q=await NP.enableA11y();toast(q.msg)}else await NP.openSetting({name:id})}catch(e){}return}
+  if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else if(id==="a11y"&&pmSt.secure){const q=await NP.enableA11y();toast(q.msg)}else{pmTip(id);await NP.openSetting({name:id})}}catch(e){}return}
   if(WEBP[id]){try{await WEBP[id]();pmSt[id]=true}catch(e){pmSt[id]=false}}}
 const pmRet=()=>new Promise(r=>{let d=false;const f=()=>{if(!document.hidden&&!d){d=true;document.removeEventListener("visibilitychange",f);setTimeout(r,500)}};document.addEventListener("visibilitychange",f);setTimeout(()=>{if(!d){d=true;document.removeEventListener("visibilitychange",f);r()}},120000)});
-async function pmChain(){await pmCheck();for(const id of["battery","overlay","allfiles","a11y","notif_access"]){if(pmSt[id])continue;if(id==="a11y"&&pmSt.secure){try{await NP.enableA11y()}catch(e){}await pmCheck();continue}const w=pmRet();try{await NP.openSetting({name:id})}catch(e){}await w;await pmCheck()}}
+const PMTIP={battery:'Jo box aaye usme "Allow" dabao',overlay:'List me Nyra dhoondho, uspe tap karo, phir switch ON karo',allfiles:'Nyra ke aage switch ON karo',a11y:'Nyra chuno aur ON karo',notif_access:'List me Nyra ON karo',assistant:'Nyra chuno'};
+window._batN=0;
+async function askBattery(){if(!NP||window._batN>=2)return;try{let x=await NP.status();if(x.battery)return;window._batN++;toast('Background ke liye "Allow" dabao, tabhi Nyra peeche chalegi');await NP.openSetting({name:"battery"});for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,500));x=await NP.status();if(x.battery)return}}catch(e){}}
+function pmTip(id){if(PMTIP[id])toast(PMTIP[id])}
+async function pmChain(){await pmCheck();for(const id of["battery","overlay","allfiles","a11y","notif_access","assistant"]){if(pmSt[id])continue;if(id==="a11y"&&pmSt.secure){try{await NP.enableA11y()}catch(e){}await pmCheck();continue}const w=pmRet();pmTip(id);try{await NP.openSetting({name:id})}catch(e){}await w;await pmCheck()}}
 async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))return;
   await pmCheck();if(pmSt.allfiles)bkRestore();if(!sp.classList.contains("sk"))return;sp.innerHTML="";sp.dataset.pg="perm";
   const c=document.createElement("div");c.className="pc";
@@ -907,7 +912,7 @@ async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))r
     nx.onclick=()=>{pmStep=2;pmRender()}}
   else{
     const okBat=!NP||pmSt.battery;
-    all.textContent="\u26a1  Baaki sab ek saath chalu karo";all.style.display=NP?"":"none";all.onclick=async()=>{all.disabled=true;ht.textContent="Ek ek karke screens khulengi. Har jagah Nyra on karo aur wapas aao.";if(NP)await pmChain();pmRender()};nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;
+    all.textContent="\u26a1  Baaki sab ek saath chalu karo";all.style.display=NP?"":"none";all.onclick=async()=>{all.disabled=true;ht.textContent="Ek ek karke screens khulengi. Har jagah Nyra on karo aur wapas aao.";if(NP)await pmChain();pmRender()};nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;if(NP&&!window._pmAuto&&!(pmSt.battery&&pmSt.overlay&&pmSt.notif_access&&pmSt.a11y)){window._pmAuto=1;setTimeout(()=>all.click(),700)}
     ht.textContent="\"Baaki hai\" wali row par tap karo, uski system screen khulegi \u2014 kaam hone par yahan wapas aao. Inme se koi bhi baad me Menu > Permissions me badal sakte ho.";
     nx.onclick=done;
     const tb=document.createElement("div");tb.style.cssText="display:flex;gap:8px;margin-top:12px";
@@ -949,6 +954,7 @@ function bkRestore(){bkTasks();bkMem();bkSet();restoreAll()}
 bkRestore();
 if(T.wk&&!PM_FIRST)wakeApply();else wkSt();
 setTimeout(()=>window.nyraWake&&window.nyraWake(),900);
+setTimeout(()=>{try{if(NP&&localStorage.getItem("nyra_pm"))askBattery()}catch(e){}},2000);
 if(PM_FIRST)setTimeout(()=>{ppOpen(false);pg("Permissions")},400);
 if("serviceWorker" in navigator&&/^https?:$/.test(location.protocol))navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
