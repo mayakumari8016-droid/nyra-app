@@ -48,10 +48,11 @@ jobs:
           const fs=require("fs");
           const base="android/app/src/main/";
           const f=base+"AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
-          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED","WRITE_SECURE_SETTINGS"];
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED","WRITE_SECURE_SETTINGS","MANAGE_EXTERNAL_STORAGE","WRITE_EXTERNAL_STORAGE"];
           let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
           for(const n of ["camera","microphone","location.gps","telephony","bluetooth"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
           x=x.replace("<application",a+"\n    <application");
+          x=x.replace(/<application(\s)/,'<application android:requestLegacyExternalStorage="true"$1');
           const svc=`
                   <service android:name=".NyraNotifListener" android:exported="true" android:label="Nyra" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
                       <intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter>
@@ -175,6 +176,7 @@ jobs:
           import android.content.pm.PackageManager;
           import android.net.Uri;
           import android.os.Build;
+          import android.os.Environment;
           import android.os.PowerManager;
           import android.provider.Settings;
           import androidx.core.app.NotificationManagerCompat;
@@ -200,12 +202,12 @@ jobs:
               @Permission(alias = "sms", strings = { "android.permission.SEND_SMS", "android.permission.READ_SMS", "android.permission.RECEIVE_SMS" }),
               @Permission(alias = "loc", strings = { "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION" }),
               @Permission(alias = "media", strings = { "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO" }),
-              @Permission(alias = "storage", strings = { "android.permission.READ_EXTERNAL_STORAGE" }),
+              @Permission(alias = "storage", strings = { "android.permission.READ_EXTERNAL_STORAGE", "android.permission.WRITE_EXTERNAL_STORAGE" }),
               @Permission(alias = "calls", strings = { "android.permission.ANSWER_PHONE_CALLS", "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" }),
               @Permission(alias = "bt", strings = { "android.permission.BLUETOOTH_CONNECT" })
           })
           public class NyraPerms extends Plugin {
-              private static final String[] RT = { "mic", "notif", "cam", "phone", "contacts", "sms", "loc", "media", "calls", "bt" };
+              private static final String[] RT = { "mic", "notif", "cam", "phone", "contacts", "sms", "loc", "media", "calls", "bt", "allfiles" };
 
               private String[] perms(String a) {
                   int sdk = Build.VERSION.SDK_INT;
@@ -225,12 +227,14 @@ jobs:
                           return sdk >= 26
                               ? new String[] { "android.permission.ANSWER_PHONE_CALLS", "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" }
                               : new String[] { "android.permission.READ_PHONE_STATE", "android.permission.READ_CALL_LOG" };
+                      case "allfiles": return sdk >= 30 ? new String[0] : new String[] { "android.permission.WRITE_EXTERNAL_STORAGE", "android.permission.READ_EXTERNAL_STORAGE" };
                       case "bt": return sdk >= 31 ? new String[] { "android.permission.BLUETOOTH_CONNECT" } : new String[0];
                       default: return new String[0];
                   }
               }
 
               private boolean granted(String a) {
+                  if (a.equals("allfiles") && Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
                   for (String p : perms(a)) {
                       if (ContextCompat.checkSelfPermission(getContext(), p) != PackageManager.PERMISSION_GRANTED) return false;
                   }
@@ -275,7 +279,8 @@ jobs:
                   List<String> al = new ArrayList<>();
                   for (String a : names) {
                       if (perms(a).length > 0 && !granted(a)) {
-                          al.add(a.equals("media") && Build.VERSION.SDK_INT < 33 ? "storage" : a);
+                          String x = ((a.equals("media") && Build.VERSION.SDK_INT < 33) || a.equals("allfiles")) ? "storage" : a;
+                          if (!al.contains(x)) al.add(x);
                       }
                   }
                   if (al.isEmpty()) {
@@ -333,6 +338,7 @@ jobs:
                           case "overlay": i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + pk)); break;
                           case "notif_access": i = new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"); break;
                           case "a11y": i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS); break;
+                          case "allfiles": i = Build.VERSION.SDK_INT >= 30 ? new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + pk)) : new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pk)); break;
                           case "assistant": i = new Intent(Settings.ACTION_VOICE_INPUT_SETTINGS); break;
                           default: i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pk));
                       }
@@ -807,35 +813,78 @@ jobs:
                   return d;
               }
 
+              /* phone ke "Nyra" folder me copy: app delete hone par bhi bachi rehti hai (storage permission chahiye) */
+              private boolean pubOk() {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 30) return android.os.Environment.isExternalStorageManager();
+                      return androidx.core.content.ContextCompat.checkSelfPermission(getContext(), "android.permission.WRITE_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED;
+                  } catch (Exception e) { return false; }
+              }
+
+              private java.io.File pubDir() {
+                  java.io.File d = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "Nyra");
+                  d.mkdirs();
+                  return d;
+              }
+
+              private void writeTo(java.io.File f, String d) throws Exception {
+                  java.io.FileOutputStream o = new java.io.FileOutputStream(f);
+                  o.write(d.getBytes("UTF-8"));
+                  o.close();
+              }
+
+              private String readFrom(java.io.File f) throws Exception {
+                  java.io.FileInputStream in = new java.io.FileInputStream(f);
+                  java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                  byte[] buf = new byte[8192];
+                  int k;
+                  while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                  in.close();
+                  return bo.toString("UTF-8");
+              }
+
               @PluginMethod
               public void saveFile(PluginCall call) {
+                  String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
+                  String d = call.getString("data", "");
+                  String where = "";
                   try {
-                      String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
-                      String d = call.getString("data", "");
                       java.io.File f = new java.io.File(nyraDir(), n);
-                      java.io.FileOutputStream o = new java.io.FileOutputStream(f);
-                      o.write(d.getBytes("UTF-8"));
-                      o.close();
-                      call.resolve(res(true, f.getAbsolutePath()));
+                      writeTo(f, d);
+                      where = f.getAbsolutePath();
                   } catch (Exception e) {
-                      call.resolve(res(false, "file save nahi hui: " + e.getMessage()));
+                      where = "";
                   }
+                  boolean pub = false;
+                  if (pubOk()) {
+                      try {
+                          java.io.File f2 = new java.io.File(pubDir(), n);
+                          writeTo(f2, d);
+                          where = f2.getAbsolutePath();
+                          pub = true;
+                      } catch (Exception e) {}
+                  }
+                  JSObject o = res(!where.isEmpty(), where.isEmpty() ? "file save nahi hui" : where);
+                  o.put("public", pub);
+                  call.resolve(o);
               }
 
               @PluginMethod
               public void loadFile(PluginCall call) {
+                  String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
                   try {
-                      String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
-                      java.io.File f = new java.io.File(nyraDir(), n);
-                      if (!f.exists()) { call.resolve(res(false, "file nahi hai")); return; }
-                      java.io.FileInputStream in = new java.io.FileInputStream(f);
-                      java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-                      byte[] buf = new byte[8192];
-                      int k;
-                      while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
-                      in.close();
+                      java.io.File f = null;
+                      if (pubOk()) {
+                          java.io.File p = new java.io.File(pubDir(), n);
+                          if (p.exists()) f = p;
+                      }
+                      if (f == null) {
+                          java.io.File q = new java.io.File(nyraDir(), n);
+                          if (q.exists()) f = q;
+                      }
+                      if (f == null) { call.resolve(res(false, "file nahi hai")); return; }
                       JSObject o = res(true, "ok");
-                      o.put("data", bo.toString("UTF-8"));
+                      o.put("data", readFrom(f));
                       call.resolve(o);
                   } catch (Exception e) {
                       call.resolve(res(false, "file nahi padhi: " + e.getMessage()));
