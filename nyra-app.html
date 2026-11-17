@@ -816,10 +816,10 @@ async function pmCheck(){
   for(const id in nm){try{const r=await navigator.permissions.query({name:nm[id]});pmSt[id]=r.state==="granted"}catch(e){pmSt[id]=id==="notif"&&"Notification" in window?Notification.permission==="granted":!!pmSt[id]}}}
 async function pmAsk(m){
   const id=m[0];
-  if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else await NP.openSetting({name:id})}catch(e){}return}
+  if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else if(id==="a11y"&&pmSt.secure){const q=await NP.enableA11y();toast(q.msg)}else await NP.openSetting({name:id})}catch(e){}return}
   if(WEBP[id]){try{await WEBP[id]();pmSt[id]=true}catch(e){pmSt[id]=false}}}
 const pmRet=()=>new Promise(r=>{let d=false;const f=()=>{if(!document.hidden&&!d){d=true;document.removeEventListener("visibilitychange",f);setTimeout(r,500)}};document.addEventListener("visibilitychange",f);setTimeout(()=>{if(!d){d=true;document.removeEventListener("visibilitychange",f);r()}},120000)});
-async function pmChain(){await pmCheck();for(const id of["battery","overlay","a11y","notif_access"]){if(pmSt[id])continue;const w=pmRet();try{await NP.openSetting({name:id})}catch(e){}await w;await pmCheck()}}
+async function pmChain(){await pmCheck();for(const id of["battery","overlay","a11y","notif_access"]){if(pmSt[id])continue;if(id==="a11y"&&pmSt.secure){try{await NP.enableA11y()}catch(e){}await pmCheck();continue}const w=pmRet();try{await NP.openSetting({name:id})}catch(e){}await w;await pmCheck()}}
 async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))return;
   await pmCheck();if(!sp.classList.contains("sk"))return;sp.innerHTML="";sp.dataset.pg="perm";
   const c=document.createElement("div");c.className="pc";
@@ -853,7 +853,16 @@ async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))r
     c.appendChild(tb);
     const ai=document.createElement("button");ai.className="skb";ai.style.cssText="width:100%;margin-top:10px";ai.textContent="Restricted setting hai? App info kholo";
     ai.onclick=()=>{if(NP)NP.openSetting({name:"appinfo"});ht.textContent="Upar kone ke teen dot (\u22ee) dabao > Allow restricted settings. Phir wapas Accessibility me Nyra on karo."};
-    c.appendChild(ai)}
+    c.appendChild(ai);
+    if(NP){const ad=document.createElement("div");ad.className="skr";ad.style.cssText="display:block;margin-top:12px";
+      ad.innerHTML='<b></b><small style="display:block;margin:4px 0 8px"></small><code style="display:block;font-size:13px;word-break:break-all;user-select:all;margin-bottom:8px">adb shell pm grant com.nyra.app android.permission.WRITE_SECURE_SETTINGS</code><div style="display:flex;gap:8px"><button class="skb" style="flex:1">Command copy karo</button><button class="skb" style="flex:1">Root se do</button></div>';
+      ad.querySelector("b").textContent=pmSt.secure?"\u2713 One-tap fix chalu hai":"One-tap fix (Advanced)";
+      ad.querySelector("small").textContent=pmSt.secure?"Ab Nyra band hui accessibility aur notification access khud wapas ON kar legi, aur kaam karte waqt kabhi dobara settings nahi kholni padengi.":"Ek baar computer se (ya root se) ye permission do. Uske baad Nyra apni accessibility khud ON karegi aur kabhi band ho jaye to khud theek kar legi.";
+      const bb=ad.querySelectorAll("button");
+      if(pmSt.secure){ad.querySelector("code").style.display="none";bb[0].parentNode.style.display="none"}
+      else{bb[0].onclick=async()=>{const t="adb shell pm grant com.nyra.app android.permission.WRITE_SECURE_SETTINGS";try{await navigator.clipboard.writeText(t);toast("Command copy ho gayi")}catch(e){toast("Command ko dabake copy karo")}};
+        bb[1].onclick=async()=>{bb[1].disabled=true;ht.textContent="Root se maang rahi hoon...";try{const q=await NP.rootGrant();ht.textContent=q.msg}catch(e){ht.textContent="Is APK me ye plugin nahi hai. Naya APK banao."}pmRender()}}
+      c.appendChild(ad)}}
   sp.appendChild(c);icons()}
 function pmBack(){const sp=$("s-page");if(sp.querySelector(".pml"))pmRender()}
 document.addEventListener("resume",pmBack);window.addEventListener("focus",pmBack);

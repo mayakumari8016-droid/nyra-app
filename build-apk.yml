@@ -48,7 +48,7 @@ jobs:
           const fs=require("fs");
           const base="android/app/src/main/";
           const f=base+"AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
-          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED"];
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED","WRITE_SECURE_SETTINGS"];
           let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
           for(const n of ["camera","microphone","location.gps","telephony","bluetooth"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
           x=x.replace("<application",a+"\n    <application");
@@ -163,6 +163,7 @@ jobs:
                   visible = true;
                   hd.removeCallbacks(keep);
                   NyraService.showOrb(false);
+                  NyraSecure.ensure(this);
               }
           }
           EOF
@@ -258,6 +259,7 @@ jobs:
                   o.put("notif_access", na);
                   o.put("a11y", ac);
                   o.put("assistant", as);
+                  o.put("secure", NyraSecure.has(c));
                   return o;
               }
 
@@ -289,6 +291,38 @@ jobs:
               }
 
               @PluginMethod
+              public void enableA11y(PluginCall call) {
+                  boolean ok = NyraSecure.ensure(getContext());
+                  JSObject o = status();
+                  o.put("ok", ok);
+                  o.put("msg", ok ? "Accessibility ON ho gayi" : "Pehle WRITE_SECURE_SETTINGS permission do");
+                  call.resolve(o);
+              }
+
+              @PluginMethod
+              public void rootGrant(final PluginCall call) {
+                  new Thread(new Runnable() {
+                      @Override public void run() {
+                          boolean ok = false;
+                          String msg;
+                          try {
+                              Process p = Runtime.getRuntime().exec(new String[] { "su", "-c", "pm grant " + getContext().getPackageName() + " android.permission.WRITE_SECURE_SETTINGS" });
+                              int rc = p.waitFor();
+                              ok = rc == 0 && NyraSecure.has(getContext());
+                              msg = ok ? "Permission mil gayi" : "Root ne permission nahi di";
+                          } catch (Exception e) {
+                              msg = "Ye phone rooted nahi hai. Computer wali command use karo.";
+                          }
+                          if (ok) NyraSecure.ensure(getContext());
+                          JSObject o = status();
+                          o.put("ok", ok);
+                          o.put("msg", msg);
+                          call.resolve(o);
+                      }
+                  }).start();
+              }
+
+              @PluginMethod
               public void openSetting(PluginCall call) {
                   String n = call.getString("name", "");
                   String pk = getContext().getPackageName();
@@ -312,6 +346,44 @@ jobs:
                           getContext().startActivity(f);
                       } catch (Exception e2) {}
                       call.resolve();
+                  }
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraSecure.java <<'EOF'
+          package com.nyra.app;
+          import android.content.ContentResolver;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.provider.Settings;
+          import androidx.core.content.ContextCompat;
+
+          public class NyraSecure {
+              static final String PERM = "android.permission.WRITE_SECURE_SETTINGS";
+
+              public static boolean has(Context c) {
+                  return ContextCompat.checkSelfPermission(c, PERM) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private static boolean add(Context c, String key, String flat) {
+                  ContentResolver cr = c.getContentResolver();
+                  String cur = Settings.Secure.getString(cr, key);
+                  if (cur == null) cur = "";
+                  if (cur.contains(flat)) return true;
+                  return Settings.Secure.putString(cr, key, cur.isEmpty() ? flat : cur + ":" + flat);
+              }
+
+              /* WRITE_SECURE_SETTINGS mil jaye to Nyra apni accessibility aur notification access khud ON kar leti hai */
+              public static boolean ensure(Context c) {
+                  if (!has(c)) return false;
+                  try {
+                      String pk = c.getPackageName();
+                      boolean a = add(c, "enabled_accessibility_services", pk + "/" + pk + ".NyraAccessibility");
+                      Settings.Secure.putInt(c.getContentResolver(), "accessibility_enabled", 1);
+                      add(c, "enabled_notification_listeners", pk + "/" + pk + ".NyraNotifListener");
+                      return a;
+                  } catch (Exception e) {
+                      return false;
                   }
               }
           }
@@ -416,6 +488,16 @@ jobs:
                       if (!video || s.contains("sponsored")) continue;
                       n.getBoundsInScreen(b);
                       if (b.height() > 100 && b.top < bestTop) { bestTop = b.top; best = n; }
+                  }
+                  if (best == null) {
+                      int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
+                      int top2 = Integer.MAX_VALUE;
+                      for (AccessibilityNodeInfo n : all) {
+                          if (!n.isVisibleToUser() || !n.isClickable()) continue;
+                          n.getBoundsInScreen(b);
+                          if (b.width() < sw * 0.6 || b.height() < 180 || b.top < sh * 0.15) continue;
+                          if (b.top < top2) { top2 = b.top; best = n; }
+                      }
                   }
                   return best != null && clickNode(best);
               }
@@ -556,27 +638,58 @@ jobs:
                   }
               }
 
+              /* YouTube search page se pehle video ka ID nikalta hai, taaki seedha wahi video chal jaye (typing ya tap ki zaroorat nahi) */
+              private String findVideoId(String q) {
+                  try {
+                      java.net.URL url = new java.net.URL("https://www.youtube.com/results?search_query=" + Uri.encode(q) + "&sp=EgIQAQ%253D%253D");
+                      java.net.HttpURLConnection h = (java.net.HttpURLConnection) url.openConnection();
+                      h.setConnectTimeout(8000);
+                      h.setReadTimeout(8000);
+                      h.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+                      h.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+                      h.setRequestProperty("Cookie", "CONSENT=YES+1; SOCS=CAI");
+                      java.io.InputStream in = h.getInputStream();
+                      java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                      byte[] buf = new byte[16384];
+                      int k, total = 0;
+                      while ((k = in.read(buf)) > 0 && total < 1500000) { bo.write(buf, 0, k); total += k; }
+                      in.close();
+                      String s = bo.toString("UTF-8");
+                      java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(s);
+                      if (m.find()) return m.group(1);
+                      m = java.util.regex.Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(s);
+                      if (m.find()) return m.group(1);
+                  } catch (Exception e) {}
+                  return null;
+              }
+
               @PluginMethod
               public void youtube(final PluginCall call) {
                   final String q = call.getString("query", "");
                   final boolean play = Boolean.TRUE.equals(call.getBoolean("play", false));
                   final Context c = getContext();
-                  try {
-                      Uri u = q.isEmpty() ? Uri.parse("https://www.youtube.com/") : Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q));
-                      Intent i = new Intent(Intent.ACTION_VIEW, u);
-                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      i.setPackage("com.google.android.youtube");
-                      try { c.startActivity(i); }
-                      catch (ActivityNotFoundException e) { i.setPackage(null); c.startActivity(i); }
-                  } catch (Exception e) {
-                      call.resolve(res(false, "YouTube nahi khula: " + e.getMessage()));
-                      return;
-                  }
-                  if (!play || q.isEmpty()) { call.resolve(res(true, "YouTube khul gaya")); return; }
                   new Thread(new Runnable() {
                       @Override public void run() {
+                          String vid = null;
+                          if (play && !q.isEmpty()) vid = findVideoId(q);
+                          try {
+                              Uri u;
+                              if (vid != null) u = Uri.parse("https://www.youtube.com/watch?v=" + vid);
+                              else if (q.isEmpty()) u = Uri.parse("https://www.youtube.com/");
+                              else u = Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q));
+                              Intent i = new Intent(Intent.ACTION_VIEW, u);
+                              i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              i.setPackage("com.google.android.youtube");
+                              try { c.startActivity(i); }
+                              catch (ActivityNotFoundException e) { i.setPackage(null); c.startActivity(i); }
+                          } catch (Exception e) {
+                              call.resolve(res(false, "YouTube nahi khula: " + e.getMessage() + ". Agar app background me hai to Menu > Permissions me 'Dusre apps ke upar dikhna' on karo."));
+                              return;
+                          }
+                          if (!play || q.isEmpty()) { call.resolve(res(true, "YouTube khul gaya")); return; }
+                          if (vid != null) { call.resolve(res(true, "video seedha chala diya: " + q)); return; }
                           if (NyraAccessibility.inst == null) {
-                              call.resolve(res(true, "YouTube khul gaya, par video apne aap chalane ke liye Accessibility on chahiye"));
+                              call.resolve(res(true, "YouTube search khul gaya, par video apne aap chalane ke liye Accessibility on chahiye"));
                               return;
                           }
                           sleep(3500);
@@ -791,6 +904,12 @@ jobs:
               private WindowManager.LayoutParams lp;
               private boolean wantOrb = false;
               private boolean wantTalk = false;
+              private final Runnable wd = new Runnable() {
+                  @Override public void run() {
+                      NyraSecure.ensure(NyraService.this);
+                      if (running) hd.postDelayed(this, 15000);
+                  }
+              };
 
               @Override public IBinder onBind(Intent i) { return null; }
 
@@ -827,6 +946,8 @@ jobs:
                       else startForeground(7, n);
                       inst = this;
                       running = true;
+                      hd.removeCallbacks(wd);
+                      hd.postDelayed(wd, 15000);
                       if (wl == null) {
                           PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                           wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nyra:live");
@@ -913,6 +1034,7 @@ jobs:
                   setOrb(false);
                   try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception e) {}
                   wl = null;
+                  hd.removeCallbacks(wd);
                   running = false;
                   inst = null;
                   super.onDestroy();
