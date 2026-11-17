@@ -234,6 +234,9 @@ nav .t.on{background:linear-gradient(#4f8cff,#2358d6);color:#fff}
 <div class="pc" id="vcard"><div class="ph"><div class="pt"><i data-ic="voice" data-sz="22"></i></div><div><b>Awaaz</b><small>Tap karke suno, phir chuno</small></div></div><div class="vt2" id="vtabs"></div><div id="vlist"></div><div class="hint" id="vnote" style="display:none"><i></i><span>Agli baar call shuru hone pe lagegi.</span></div></div>
 <div class="sg" style="margin-bottom:16px"><button class="sr" data-pg="Voice engine"><div class="ti"><i data-ic="heart" data-sz="24"></i></div><span><b>Voice engine</b><small>Normal ya Advanced Agentic \u2014 wo kaise sunti, sochti aur bolti hai</small></span><i class="ch" data-ic="chev" data-sz="18"></i></button></div>
 <div class="sg" style="margin-bottom:16px"><button class="sr" data-pg="Messages aur WhatsApp"><div class="ti"><i data-ic="bell" data-sz="24"></i></div><span><b>Messages aur WhatsApp</b><small>Message alerts, kaunse apps wo announce kare, WhatsApp auto-reply</small></span><i class="ch" data-ic="chev" data-sz="18"></i></button></div>
+<div class="pc"><div class="ph"><div class="pt"><i data-ic="mic" data-sz="22"></i></div><div><b>Hey Nyra</b><small id="wks">App band ho tab bhi "Hey Nyra" bolne par Nyra jaag jaati hai</small></div></div>
+<div class="tr"><span>"Hey Nyra" se jagao<small>Mic hamesha chalu rehta hai, battery thodi zyada lagti hai</small></span><button class="sw" data-tg="wk" aria-label="Hey Nyra"></button></div>
+<div class="tr"><span>Offline awaaz commands<small>Hey Nyra ke baad bolo: volume badhao / kam karo, torch on, gaana pause / next, wifi, bluetooth, home, back, screenshot, "WhatsApp kholo". Bina internet ke chalta hai. Samajh na aaye to live call shuru ho jaati hai.</small></span><button class="sw" data-tg="wko" aria-label="Offline commands"></button></div></div>
 <div class="pc"><div class="ph"><div class="pt"><i data-ic="phone" data-sz="22"></i></div><div><b>Call announcement</b><small>Nyra har aane wali call batati hai aur use utha / kaat sakti hai</small></div></div>
 <div class="tr"><span>Aane wali calls batao</span><button class="sw" data-tg="ann" aria-label="Aane wali calls batao"></button></div>
 <div class="tr"><span>Nyra call uthaye to loudspeaker</span><button class="sw" data-tg="spk" aria-label="Loudspeaker"></button></div></div>
@@ -494,6 +497,7 @@ async function start(){
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
   catch(e){stat("Mic ki ijazat chahiye");toast("Chrome me mic ki permission do");return}
   if(NA)NA.fg({on:true}).catch(()=>{});
+  if(NA)NA.wake({action:"pause"}).catch(()=>{});
   actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();
   clearInterval(kA);kA=setInterval(()=>{if(actx&&actx.state!=="running")actx.resume().catch(()=>{})},1500);
   if(NP)NP.status().then(x=>{if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
@@ -528,7 +532,7 @@ function mic(){
 }
 function stop(fromClose){
   live=false;clearInterval(fT);clearInterval(kA);if(cam)camMsg();
-  if(NA){NA.orb({talk:false}).catch(()=>{});NA.fg({on:false}).catch(()=>{})}
+  if(NA){NA.orb({talk:false}).catch(()=>{});NA.fg({on:false}).catch(()=>{});NA.wake({action:"resume"}).catch(()=>{})}
   try{proc&&proc.disconnect();src&&src.disconnect()}catch(e){}
   stream&&stream.getTracks().forEach(t=>t.stop());
   stopPlay();try{actx&&actx.close()}catch(e){}
@@ -538,6 +542,10 @@ function stop(fromClose){
   stat("Call chalane ke liye neeche neela button dabao");
 }
 $("call").onclick=()=>live||ws?stop():start();
+/* ===== "Hey Nyra" wake-word + offline commands (sab phone par, Vosk Hindi model) ===== */
+window.nyraWake=async()=>{if(!NA)return;try{const r=await NA.wakePending();if(r&&r.pending&&!live&&!ws)start()}catch(e){}};
+async function wakeApply(){if(!NA){wkSt();return}try{const r=T.wk?await NA.wake({action:"on",offline:T.wko!==false}):await NA.wake({action:"off"});if(r&&r.ok===false)toast(r.msg);if(T.wk&&r&&r.ok===false){T.wk=false;tSave();document.querySelectorAll('[data-tg="wk"]').forEach(b=>b.setAttribute("aria-pressed","false"))}}catch(e){}setTimeout(wkSt,1500)}
+async function wkSt(){const e=$("wks");if(!e)return;if(!NA){e.textContent="Ye feature sirf Nyra app (APK) me chalta hai.";return}if(!T.wk){e.textContent='App band ho tab bhi "Hey Nyra" bolne par Nyra jaag jaati hai';return}try{const r=await NA.wake({action:"status"});e.textContent=(r.msg||"")+(r.last?' | aakhri suna: '+String(r.last).slice(0,40):"")}catch(x){}}
 
 /* home */
 (function(){const n=[];let h="";for(let i=0;i<34;i++){const a=Math.random()*6.28,r=Math.sqrt(Math.random())*42;n.push([50+r*Math.cos(a),50+r*Math.sin(a)])}
@@ -599,7 +607,7 @@ $("hn").textContent=U.un||"dost";icons();
 
 /* nyra settings */
 let T={};try{T=JSON.parse(localStorage.getItem("nyra_t")||"{}")}catch(e){}
-if(T.ann===undefined)T.ann=true;
+if(T.ann===undefined)T.ann=true;if(T.wko===undefined)T.wko=true;
 function tSave(){try{localStorage.setItem("nyra_t",JSON.stringify(T))}catch(e){}bkSettings()}
 const LANGN={hindi:"Hindi",english:"English",bangla:"Bangla (Bengali)",tamil:"Tamil",telugu:"Telugu",marathi:"Marathi",gujarati:"Gujarati",kannada:"Kannada",malayalam:"Malayalam",punjabi:"Punjabi",urdu:"Urdu"};
 let LS={};try{LS=JSON.parse(localStorage.getItem("nyra_ls")||"{}")}catch(e){}
@@ -650,9 +658,9 @@ async function vprev(v,btn){if(!S.key){toast("Pehle Personal me Gemini key daalo
 const DRD="{name} abhi drive kar rahe hain, isliye call nahi utha paye. Free hote hi call back karenge. - Nyra (auto reply)";
 function rsTxt(){$("rsd").textContent=T.rs?"Chalu. Nyra Instagram ka Auto scroll on rakhti hai.":"Band. Nyra Instagram ke Auto scroll ko nahi chhedti."}
 function npFill(){$("auto2").setAttribute("aria-pressed",$("auto").getAttribute("aria-pressed"));$("npe").options[0].text=S.name;$("npe").value=S.pe||"main";$("nt").textContent=S.name;$("nn").value=S.name;$("npr").value=S.persona;$("nmd").value=S.model;$("drt").value=T.dr||DRD;$("nl").value=T.lang||"auto";
-  document.querySelectorAll("[data-tg]").forEach(b=>b.setAttribute("aria-pressed",!!T[b.dataset.tg]));rsTxt();vRender()}
+  document.querySelectorAll("[data-tg]").forEach(b=>b.setAttribute("aria-pressed",!!T[b.dataset.tg]));rsTxt();vRender();wkSt()}
 function npOpen(o){if(o)npFill();$("np").classList.toggle("open",o)}
-document.querySelectorAll("[data-tg]").forEach(b=>b.onclick=()=>{const k=b.dataset.tg;T[k]=!T[k];b.setAttribute("aria-pressed",!!T[k]);tSave();if(k==="rs")rsTxt()});
+document.querySelectorAll("[data-tg]").forEach(b=>b.onclick=()=>{const k=b.dataset.tg;T[k]=!T[k];b.setAttribute("aria-pressed",!!T[k]);tSave();if(k==="rs")rsTxt();if(k==="wk"||k==="wko")wakeApply()});
 document.querySelectorAll("[data-pg]").forEach(b=>b.onclick=()=>{npOpen(false);pg(b.dataset.pg)});
 $("nsv").onclick=()=>{S.name=$("nn").value.trim()||DEF.name;S.persona=$("npr").value.trim()||DEF.persona;S.model=$("nmd").value.trim()||DEF.model;sSave();$("nt").textContent=S.name;vRender();toast("Save ho gaya")};
 $("drs").onclick=()=>{const v=$("drt").value.trim();T.dr=v===DRD?"":v;tSave();toast("Save ho gaya")};
@@ -892,6 +900,8 @@ function bkSet(){if(!NA||(localStorage.getItem("nyra_t")&&localStorage.getItem("
   npFill()}catch(e){}}).catch(()=>{})}
 function bkRestore(){bkTasks();bkMem();bkSet()}
 bkRestore();
+if(T.wk&&!PM_FIRST)wakeApply();else wkSt();
+setTimeout(()=>window.nyraWake&&window.nyraWake(),900);
 if(PM_FIRST)setTimeout(()=>{ppOpen(false);pg("Permissions")},400);
 if("serviceWorker" in navigator&&/^https?:$/.test(location.protocol))navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>

@@ -66,6 +66,7 @@ jobs:
                       <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
                   </service>
                   <service android:name=".NyraService" android:exported="false" android:foregroundServiceType="microphone" />
+                  <service android:name=".NyraWake" android:exported="false" android:foregroundServiceType="microphone" />
                   <service android:name=".NyraSessionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION" />
                   <service android:name=".NyraRecognitionService" android:exported="true" android:label="Nyra">
                       <intent-filter><action android:name="android.speech.RecognitionService" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
@@ -97,6 +98,18 @@ jobs:
           EOF
       - run: npm install
       - run: npx cap add android
+      - name: Offline Hindi awaaz model (Vosk small, ~42 MB)
+        run: |
+          mkdir -p android/app/src/main/assets
+          curl -fL --retry 4 --retry-delay 5 -o hi.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+          unzip -q hi.zip -d hi_tmp
+          mv hi_tmp/vosk-model-small-hi-0.22 android/app/src/main/assets/model-hi
+          cat /proc/sys/kernel/random/uuid > android/app/src/main/assets/model-hi/uuid
+          du -sh android/app/src/main/assets/model-hi
+      - name: Vosk library jodo
+        run: |
+          sed -i '/^dependencies {/a\    implementation "com.alphacephei:vosk-android:0.3.47"\n    implementation "net.java.dev.jna:jna:5.13.0@aar"' android/app/build.gradle
+          grep -n "vosk\|jna" android/app/build.gradle
       - name: Native permission plugin aur services
         run: |
           mkdir -p android/app/src/main/java/com/nyra/app
@@ -165,6 +178,13 @@ jobs:
                   hd.removeCallbacks(keep);
                   NyraService.showOrb(false);
                   NyraSecure.ensure(this);
+                  if (NyraWake.pending) {
+                      hd.postDelayed(new Runnable() {
+                          @Override public void run() {
+                              try { getBridge().getWebView().evaluateJavascript("window.nyraWake&&window.nyraWake()", null); } catch (Exception e) {}
+                          }
+                      }, 600);
+                  }
               }
           }
           EOF
@@ -537,8 +557,27 @@ jobs:
                       case "home": return performGlobalAction(GLOBAL_ACTION_HOME);
                       case "recents": return performGlobalAction(GLOBAL_ACTION_RECENTS);
                       case "notifications": return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS);
+                      case "lock": return Build.VERSION.SDK_INT >= 28 && performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN);
+                      case "screenshot": return Build.VERSION.SDK_INT >= 28 && performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT);
                       default: return false;
                   }
+              }
+
+              /* Settings panel ka pehla switch (Wi-Fi / Bluetooth). want = null to bas ulta kar do */
+              public boolean setFirstSwitch(Boolean want) {
+                  AccessibilityNodeInfo r = getRootInActiveWindow();
+                  if (r == null) return false;
+                  List<AccessibilityNodeInfo> all = new ArrayList<>();
+                  collect(r, all, 0);
+                  for (AccessibilityNodeInfo n : all) {
+                      CharSequence cn = n.getClassName();
+                      boolean sw = cn != null && (cn.toString().contains("Switch") || cn.toString().contains("ToggleButton"));
+                      if (!sw && !(n.isCheckable() && n.isVisibleToUser())) continue;
+                      if (!n.isVisibleToUser()) continue;
+                      if (want != null && n.isChecked() == want.booleanValue()) return true;
+                      return clickNode(n);
+                  }
+                  return false;
               }
 
               public boolean typeText(String s) {
@@ -898,6 +937,50 @@ jobs:
               }
 
               @PluginMethod
+              public void wake(PluginCall call) {
+                  String a = call.getString("action", "status");
+                  Context c = getContext();
+                  if (a.equals("on")) {
+                      if (androidx.core.content.ContextCompat.checkSelfPermission(c, "android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
+                          call.resolve(res(false, "Hey Nyra ke liye pehle mic ki permission do (Menu > Permissions)"));
+                          return;
+                      }
+                      NyraWake.offline = !Boolean.FALSE.equals(call.getBoolean("offline", true));
+                      try {
+                          Intent i = new Intent(c, NyraWake.class);
+                          if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
+                      } catch (Exception e) {
+                          call.resolve(res(false, "Hey Nyra chalu nahi hui: " + e.getMessage()));
+                          return;
+                      }
+                      call.resolve(res(true, "Hey Nyra chalu"));
+                  } else if (a.equals("off")) {
+                      try { c.stopService(new Intent(c, NyraWake.class)); } catch (Exception e) {}
+                      call.resolve(res(true, "Hey Nyra band"));
+                  } else if (a.equals("pause")) {
+                      NyraWake.paused = true;
+                      call.resolve(res(true, "ok"));
+                  } else if (a.equals("resume")) {
+                      NyraWake.paused = false;
+                      NyraWake.pauseUntil = 0;
+                      call.resolve(res(true, "ok"));
+                  } else {
+                      JSObject o = res(true, NyraWake.status);
+                      o.put("running", NyraWake.running);
+                      o.put("last", NyraWake.last);
+                      call.resolve(o);
+                  }
+              }
+
+              @PluginMethod
+              public void wakePending(PluginCall call) {
+                  JSObject o = res(true, "ok");
+                  o.put("pending", NyraWake.pending);
+                  NyraWake.pending = false;
+                  call.resolve(o);
+              }
+
+              @PluginMethod
               public void fg(PluginCall call) {
                   try {
                       Intent i = new Intent(getContext(), NyraService.class);
@@ -1207,6 +1290,433 @@ jobs:
               @Override protected void onStartListening(Intent i, Callback c) {}
               @Override protected void onCancel(Callback c) {}
               @Override protected void onStopListening(Callback c) {}
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraWake.java <<'EOF'
+          package com.nyra.app;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.ApplicationInfo;
+          import android.content.pm.PackageManager;
+          import android.content.pm.ServiceInfo;
+          import android.hardware.camera2.CameraCharacteristics;
+          import android.hardware.camera2.CameraManager;
+          import android.media.AudioFormat;
+          import android.media.AudioManager;
+          import android.media.AudioRecord;
+          import android.media.MediaRecorder;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+          import android.provider.Settings;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.text.Normalizer;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+          import org.json.JSONObject;
+          import org.vosk.Model;
+          import org.vosk.Recognizer;
+
+          /* "Hey Nyra" wake-word + offline awaaz commands (Vosk Hindi small model, sab phone par, internet nahi chahiye) */
+          public class NyraWake extends Service {
+              public static volatile boolean running = false;
+              public static volatile boolean paused = false;
+              public static volatile boolean offline = true;
+              public static volatile boolean pending = false;
+              public static volatile long pauseUntil = 0;
+              public static volatile String last = "";
+              public static volatile String status = "band hai";
+
+              private static Model model;
+              private Thread th;
+              private volatile boolean stop = false;
+              private static boolean torchOn = false;
+
+              /* wake ke naam ke alag alag sunne wale roop. Agar tumhari awaaz par na jage to yahan aur roop jodo */
+              private static final String[] PRE = { "हे", "हेय", "हेइ", "अरे" };
+              private static final String[] NAME = { "नायरा", "नाइरा", "नैरा", "नीरा", "निरा", "नायेरा", "नायरा" };
+
+              @Override public IBinder onBind(Intent i) { return null; }
+
+              @Override
+              public int onStartCommand(Intent in, int flags, int id) {
+                  try {
+                      String ch = "nyra_wake";
+                      NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          nm.createNotificationChannel(new NotificationChannel(ch, "Hey Nyra", NotificationManager.IMPORTANCE_LOW));
+                      }
+                      Intent o = new Intent(this, MainActivity.class);
+                      o.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+                      PendingIntent pi = PendingIntent.getActivity(this, 1, o, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                      Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                      b.setContentTitle("Hey Nyra").setContentText("\"Hey Nyra\" bolo, main sun rahi hoon")
+                          .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true);
+                      Notification n = b.build();
+                      if (Build.VERSION.SDK_INT >= 30) startForeground(8, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+                      else startForeground(8, n);
+                      running = true;
+                      stop = false;
+                      if (th == null || !th.isAlive()) {
+                          th = new Thread(new Runnable() { @Override public void run() { loop(); } });
+                          th.start();
+                      }
+                  } catch (Exception e) {
+                      status = "service nahi chali: " + e.getMessage();
+                      stopSelf();
+                  }
+                  return START_STICKY;
+              }
+
+              @Override
+              public void onDestroy() {
+                  stop = true;
+                  running = false;
+                  status = "band hai";
+                  super.onDestroy();
+              }
+
+              /* ---------- model ---------- */
+              private static String nz(String s) {
+                  return Normalizer.normalize(s == null ? "" : s, Normalizer.Form.NFD).replace("\u093c", "").toLowerCase();
+              }
+
+              private void copyAssets(String src, File dst) throws Exception {
+                  String[] l = getAssets().list(src);
+                  if (l != null && l.length > 0) {
+                      dst.mkdirs();
+                      for (String n : l) copyAssets(src + "/" + n, new File(dst, n));
+                  } else {
+                      InputStream in = getAssets().open(src);
+                      OutputStream out = new FileOutputStream(dst);
+                      byte[] buf = new byte[65536];
+                      int k;
+                      while ((k = in.read(buf)) > 0) out.write(buf, 0, k);
+                      out.close();
+                      in.close();
+                  }
+              }
+
+              private String readAll(InputStream in) throws Exception {
+                  java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                  byte[] buf = new byte[4096];
+                  int k;
+                  while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                  in.close();
+                  return bo.toString("UTF-8").trim();
+              }
+
+              private void ensureModel() throws Exception {
+                  if (model != null) return;
+                  status = "awaaz model taiyaar ho raha hai...";
+                  File dir = new File(getFilesDir(), "vosk-hi");
+                  File mark = new File(dir, "uuid");
+                  String want = readAll(getAssets().open("model-hi/uuid"));
+                  boolean ok = mark.exists() && readAll(new FileInputStream(mark)).equals(want);
+                  if (!ok) {
+                      deleteRec(dir);
+                      copyAssets("model-hi", dir);
+                  }
+                  model = new Model(dir.getAbsolutePath());
+              }
+
+              private void deleteRec(File f) {
+                  if (!f.exists()) return;
+                  File[] c = f.listFiles();
+                  if (c != null) for (File x : c) deleteRec(x);
+                  f.delete();
+              }
+
+              /* ---------- main loop ---------- */
+              private String grammar() {
+                  StringBuilder sb = new StringBuilder("[");
+                  for (String p : PRE) for (String n : NAME) sb.append("\"").append(p).append(" ").append(n).append("\",");
+                  sb.append("\"[unk]\"]");
+                  return sb.toString();
+              }
+
+              private static String txt(String json, String key) {
+                  try { return new JSONObject(json).optString(key, "").trim(); } catch (Exception e) { return ""; }
+              }
+
+              private boolean isWake(String t) {
+                  String s = nz(t);
+                  if (s.isEmpty()) return false;
+                  for (String n : NAME) if (s.contains(nz(n))) return true;
+                  return false;
+              }
+
+              private AudioRecord openMic() {
+                  try {
+                      int min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                      AudioRecord a = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 4096) * 2);
+                      if (a.getState() != AudioRecord.STATE_INITIALIZED) { a.release(); return null; }
+                      a.startRecording();
+                      return a;
+                  } catch (Exception e) { return null; }
+              }
+
+              private void closeMic(AudioRecord a) {
+                  try { a.stop(); } catch (Exception e) {}
+                  try { a.release(); } catch (Exception e) {}
+              }
+
+              private void loop() {
+                  Recognizer wk = null, cm = null;
+                  AudioRecord ar = null;
+                  try {
+                      ensureModel();
+                      wk = new Recognizer(model, 16000f, grammar());
+                      cm = new Recognizer(model, 16000f);
+                  } catch (Throwable e) {
+                      status = "Hindi model nahi mila ya khula nahi: " + e.getMessage();
+                      stopSelf();
+                      return;
+                  }
+                  short[] buf = new short[2048];
+                  int mode = 0;
+                  long t0 = 0;
+                  boolean heard = false;
+                  while (!stop) {
+                      try {
+                          if (paused || System.currentTimeMillis() < pauseUntil) {
+                              if (ar != null) { closeMic(ar); ar = null; }
+                              status = "call chal rahi hai, wake ruka hua";
+                              Thread.sleep(300);
+                              continue;
+                          }
+                          if (ar == null) {
+                              ar = openMic();
+                              if (ar == null) { status = "mic nahi mila"; Thread.sleep(1500); continue; }
+                              wk.reset();
+                              mode = 0;
+                              status = "sun rahi hoon";
+                          }
+                          int n = ar.read(buf, 0, buf.length);
+                          if (n <= 0) { Thread.sleep(40); continue; }
+                          if (mode == 0) {
+                              String t = wk.acceptWaveForm(buf, n) ? txt(wk.getResult(), "text") : txt(wk.getPartialResult(), "partial");
+                              if (!t.isEmpty()) last = t;
+                              if (isWake(t)) {
+                                  wk.reset();
+                                  buzz(60);
+                                  if (!offline) { launch(); }
+                                  else { mode = 1; t0 = System.currentTimeMillis(); heard = false; cm.reset(); status = "command bolo..."; }
+                              }
+                          } else {
+                              boolean fin = cm.acceptWaveForm(buf, n);
+                              if (fin) {
+                                  String t = txt(cm.getResult(), "text");
+                                  if (!t.isEmpty()) {
+                                      last = "cmd: " + t;
+                                      if (runCmd(t)) { buzz(35); }
+                                      else { launch(); }
+                                      mode = 0; wk.reset(); status = "sun rahi hoon";
+                                      continue;
+                                  }
+                              } else if (!txt(cm.getPartialResult(), "partial").isEmpty()) {
+                                  heard = true;
+                              }
+                              long dt = System.currentTimeMillis() - t0;
+                              if ((!heard && dt > 3500) || dt > 10000) {
+                                  launch();
+                                  mode = 0; wk.reset(); status = "sun rahi hoon";
+                              }
+                          }
+                      } catch (InterruptedException e) {
+                          break;
+                      } catch (Throwable e) {
+                          status = "error: " + e.getMessage();
+                          try { Thread.sleep(800); } catch (Exception x) {}
+                      }
+                  }
+                  if (ar != null) closeMic(ar);
+                  try { wk.close(); } catch (Throwable e) {}
+                  try { cm.close(); } catch (Throwable e) {}
+              }
+
+              /* app kholo aur live call shuru karwao */
+              private void launch() {
+                  try {
+                      pending = true;
+                      pauseUntil = System.currentTimeMillis() + 20000;
+                      Intent i = new Intent(this, MainActivity.class);
+                      i.putExtra("nyra_wake", true);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                      startActivity(i);
+                  } catch (Exception e) {
+                      status = "app nahi khuli (Dusre apps ke upar dikhna on karo): " + e.getMessage();
+                  }
+              }
+
+              private void buzz(long ms) {
+                  try {
+                      Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                      if (v == null) return;
+                      if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                      else v.vibrate(ms);
+                  } catch (Exception e) {}
+              }
+
+              /* ---------- offline commands ---------- */
+              private static boolean has(String t, String re) {
+                  return Pattern.compile(nz(re)).matcher(t).find();
+              }
+
+              private static final String VOL = "(व[ाॉो]ल्यूम|व[ाॉो]ल्युम|आवाज|साउंड|volume|sound)";
+              private static final String UP = "(बढ|ज्यादा|अधिक|तेज|ऊपर|अप|बड़ा|बडा|up|increase|high)";
+              private static final String DOWN = "(घट|कम|धीम|धीर|नीचे|डाउन|down|decrease|low)";
+              private static final String ON = "(चालू|ऑन|जला|चला|शुरू|खोल|on)";
+              private static final String OFF = "(बंद|बन्द|ऑफ|बुझा|off)";
+
+              private boolean runCmd(String raw) {
+                  String t = nz(raw);
+                  AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  NyraAccessibility a = NyraAccessibility.inst;
+                  if (has(t, "(अनम्यूट|unmute)")) { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI); return true; }
+                  if (has(t, VOL) && has(t, UP)) { vol(am, AudioManager.ADJUST_RAISE); return true; }
+                  if (has(t, VOL) && has(t, DOWN)) { vol(am, AudioManager.ADJUST_LOWER); return true; }
+                  if (has(t, VOL) && has(t, OFF)) { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI); return true; }
+                  if (has(t, "(म्यूट|चुप|साइलेंट|mute|silent)")) { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI); return true; }
+                  if (has(t, "(टॉर्च|टोर्च|फ्लैश|फ़्लैश|फ्लैशलाइट|torch|flash)")) {
+                      boolean want = has(t, OFF) ? false : (has(t, ON) ? true : !torchOn);
+                      return torch(want);
+                  }
+                  if (has(t, "(वाई.?फाई|वाईफाई|वायफाय|wifi|wi-fi)")) {
+                      Boolean w = has(t, OFF) ? Boolean.FALSE : (has(t, ON) ? Boolean.TRUE : null);
+                      return toggleSetting(Build.VERSION.SDK_INT >= 29 ? "android.settings.panel.action.INTERNET_CONNECTIVITY" : Settings.ACTION_WIFI_SETTINGS, w);
+                  }
+                  if (has(t, "(ब्लूटूथ|ब्लुटूथ|bluetooth)")) {
+                      Boolean w = has(t, OFF) ? Boolean.FALSE : (has(t, ON) ? Boolean.TRUE : null);
+                      return toggleSetting(Settings.ACTION_BLUETOOTH_SETTINGS, w);
+                  }
+                  if (has(t, "(अगला|अगली|नेक्स्ट|next|स्किप|skip)")) return media(KeyEventCode.NEXT);
+                  if (has(t, "(पिछला|पिछली|प्रीवियस|previous)")) return media(KeyEventCode.PREV);
+                  if (has(t, "(पॉज|पाज|pause|रोक|रुक|(गाना|गाने|म्यूजिक|संगीत|वीडियो).*(बंद|बन्द|स्टॉप))")) return media(KeyEventCode.PAUSE);
+                  if (has(t, "(प्ले|play|resume|(गाना|गाने|म्यूजिक|संगीत).*(चला|चालू|शुरू)|(चला|चालू|शुरू).*(गाना|गाने|म्यूजिक|संगीत))")) return media(KeyEventCode.PLAY);
+                  if (has(t, "(स्क्रीनशॉट|स्क्रीन शॉट|screenshot)")) return a != null && a.press("screenshot");
+                  if (has(t, "(लॉक|lock)") && has(t, "(फोन|स्क्रीन|phone|screen|फ़ोन)")) return a != null && a.press("lock");
+                  if (has(t, "(नोटिफिकेशन|नोटिफ़िकेशन|notification)")) return a != null && a.press("notifications");
+                  if (has(t, "(रीसेंट|रिसेंट|recent)")) return a != null && a.press("recents");
+                  if (has(t, "(होम|home)")) return a != null && a.press("home");
+                  if (has(t, "(वापस|पीछे|बैक|back)")) return a != null && a.press("back");
+                  Matcher m = Pattern.compile(nz("^(.*?)\\s*(खोल दो|खोलो|खोलना|खोल|ओपन|open|चालू करो|स्टार्ट)")).matcher(t);
+                  String app = null;
+                  if (m.find() && m.group(1).trim().length() > 0) app = m.group(1).trim();
+                  else {
+                      Matcher m2 = Pattern.compile("^(open|ओपन)\\s+(.+)$").matcher(t);
+                      if (m2.find()) app = m2.group(2).trim();
+                  }
+                  if (app != null) return openApp(app);
+                  return false;
+              }
+
+              private void vol(AudioManager am, int dir) {
+                  for (int i = 0; i < 2; i++) am.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, i == 1 ? AudioManager.FLAG_SHOW_UI : 0);
+              }
+
+              private enum KeyEventCode { PLAY, PAUSE, NEXT, PREV }
+
+              private boolean media(KeyEventCode k) {
+                  int code;
+                  switch (k) {
+                      case PLAY: code = android.view.KeyEvent.KEYCODE_MEDIA_PLAY; break;
+                      case PAUSE: code = android.view.KeyEvent.KEYCODE_MEDIA_PAUSE; break;
+                      case NEXT: code = android.view.KeyEvent.KEYCODE_MEDIA_NEXT; break;
+                      default: code = android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS;
+                  }
+                  AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  am.dispatchMediaKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code));
+                  am.dispatchMediaKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code));
+                  return true;
+              }
+
+              private boolean torch(boolean on) {
+                  try {
+                      CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+                      for (String id : cm.getCameraIdList()) {
+                          CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                          Boolean f = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                          Integer face = c.get(CameraCharacteristics.LENS_FACING);
+                          if (f != null && f && face != null && face == CameraCharacteristics.LENS_FACING_BACK) {
+                              cm.setTorchMode(id, on);
+                              torchOn = on;
+                              return true;
+                          }
+                      }
+                  } catch (Exception e) {}
+                  return false;
+              }
+
+              /* Wi-Fi / Bluetooth: settings panel kholo aur Accessibility se switch dabao (Android seedha band/chalu karne nahi deta) */
+              private boolean toggleSetting(String action, final Boolean want) {
+                  try {
+                      Intent i = new Intent(action);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(i);
+                  } catch (Exception e) { return false; }
+                  final NyraAccessibility a = NyraAccessibility.inst;
+                  if (a == null) return true;
+                  new Thread(new Runnable() {
+                      @Override public void run() {
+                          try {
+                              for (int k = 0; k < 6; k++) {
+                                  Thread.sleep(700);
+                                  NyraAccessibility x = NyraAccessibility.inst;
+                                  if (x != null && x.setFirstSwitch(want)) {
+                                      Thread.sleep(500);
+                                      x.press("back");
+                                      return;
+                                  }
+                              }
+                          } catch (Exception e) {}
+                      }
+                  }).start();
+                  return true;
+              }
+
+              private static final String[][] ALIAS = {
+                  { "व्हाट्सएप", "whatsapp" }, { "व्हाट्सऐप", "whatsapp" }, { "वाट्सएप", "whatsapp" }, { "वॉट्सएप", "whatsapp" }, { "व्हाट्स", "whatsapp" },
+                  { "यूट्यूब", "youtube" }, { "यू ट्यूब", "youtube" }, { "क्रोम", "chrome" }, { "ब्राउज़र", "chrome" }, { "ब्राउजर", "chrome" },
+                  { "कैमरा", "camera" }, { "कैमरे", "camera" }, { "गैलरी", "gallery" }, { "फोटो", "photos" }, { "सेटिंग", "settings" },
+                  { "मैप्स", "maps" }, { "मैप", "maps" }, { "इंस्टाग्राम", "instagram" }, { "इंस्टा", "instagram" }, { "फोन", "phone" }, { "डायलर", "phone" },
+                  { "कैलकुलेटर", "calculator" }, { "घड़ी", "clock" }, { "क्लॉक", "clock" }, { "स्पॉटिफाई", "spotify" }, { "टेलीग्राम", "telegram" },
+                  { "फेसबुक", "facebook" }, { "जीमेल", "gmail" }, { "स्नैपचैट", "snapchat" }, { "नेटफ्लिक्स", "netflix" }, { "पेटीएम", "paytm" },
+                  { "फोनपे", "phonepe" }, { "फोन पे", "phonepe" }, { "मैसेज", "messages" }, { "संदेश", "messages" }, { "कॉन्टैक्ट", "contacts" },
+                  { "फाइल", "files" }, { "प्ले स्टोर", "play store" }, { "ट्विटर", "x" }
+              };
+
+              private boolean openApp(String spoken) {
+                  String n = nz(spoken).replaceAll("(को|ऐप|एप|एप्प|app|application|मेरा|मेरी|जी|प्लीज़|प्लीज)", " ").trim();
+                  if (n.isEmpty()) return false;
+                  for (String[] p : ALIAS) if (n.contains(nz(p[0]))) { n = p[1]; break; }
+                  PackageManager pm = getPackageManager();
+                  Intent best = null;
+                  for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                      Intent li = pm.getLaunchIntentForPackage(ai.packageName);
+                      if (li == null) continue;
+                      String l = String.valueOf(pm.getApplicationLabel(ai)).toLowerCase();
+                      if (l.equals(n)) { best = li; break; }
+                      if (best == null && l.contains(n)) best = li;
+                  }
+                  if (best == null) return false;
+                  try {
+                      best.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(best);
+                      return true;
+                  } catch (Exception e) { return false; }
+              }
           }
           EOF
       - run: node scripts/patch.js
