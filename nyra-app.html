@@ -476,7 +476,7 @@ renderMem();
 function bkMem(){if(NA&&!mem().length)NA.loadFile({name:"nyra-yaadein.json"}).then(r=>{if(r&&r.ok&&r.data){try{const a=JSON.parse(r.data);if(Array.isArray(a)&&a.length)memSave(a)}catch(e){}}}).catch(()=>{})}
 
 /* live call */
-let ws,actx,stream,proc,src,playT=0,srcs=[],live=false,kA=null;
+let ws,actx,stream,proc,src,playT=0,srcs=[],live=false,kA=null,want=false,retry=0,lastOk=0;
 function nOrb(t){if(NA)NA.orb({talk:t}).catch(()=>{})}
 const b64=buf=>{let s="";const b=new Uint8Array(buf);for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s)};
 const unb64=s=>{const r=atob(s),u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u.buffer};
@@ -498,7 +498,7 @@ async function start(){
   catch(e){stat("Mic ki ijazat chahiye");toast("Chrome me mic ki permission do");return}
   if(NA)NA.fg({on:true}).catch(()=>{});
   if(NA)NA.wake({action:"pause"}).catch(()=>{});
-  actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();
+  actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();actx.onstatechange=()=>{if(live&&actx&&actx.state!=="running")actx.resume().catch(()=>{})};
   clearInterval(kA);kA=setInterval(()=>{if(actx&&actx.state!=="running")actx.resume().catch(()=>{})},1500);
   if(NP)NP.status().then(x=>{if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
   const mine=ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(S.key));
@@ -507,7 +507,7 @@ async function start(){
     if(ws!==mine)return;
     let d=e.data;if(d instanceof Blob)d=await d.text();
     let m;try{m=JSON.parse(d)}catch(x){return}
-    if(m.setupComplete){live=true;mic();calls(1);toast("Awaaz: "+S.voice);clearInterval(fT);fT=setInterval(sendFrame,1000);if(cam)camMsg();$("call").classList.add("on");$("call").innerHTML='<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">'+P.end+'</svg>';stat("Sun rahi hoon");return}
+    if(m.setupComplete){live=true;lastOk=Date.now();mic();calls(1);toast("Awaaz: "+S.voice);clearInterval(fT);fT=setInterval(sendFrame,1000);if(cam)camMsg();$("call").classList.add("on");$("call").innerHTML='<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">'+P.end+'</svg>';stat("Sun rahi hoon");return}
     if(m.toolCall){const rs=[];for(const f of m.toolCall.functionCalls||[]){let r;try{r=await runTool(f.name,f.args)}catch(x){r="error: "+(x&&x.message||x)}toast(f.name+": "+String(r).split("\n")[0].slice(0,70));rs.push({id:f.id,name:f.name,response:{result:r}})}if(ws&&ws.readyState===1)ws.send(JSON.stringify({toolResponse:{functionResponses:rs}}));return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlay();curA=null}
@@ -517,7 +517,7 @@ async function start(){
     if(c.turnComplete){curU=null;curA=null;langSeen(tkLastU);tkAuto()}
   };
   mine.onerror=()=>{if(ws===mine)stat("Connection error")};
-  mine.onclose=ev=>{if(ws!==mine)return;if(live||ev.code!==1000)toast("Call band ("+ev.code+") "+(ev.reason||"").slice(0,80));stop(true)};
+  mine.onclose=ev=>{if(ws!==mine)return;const was=live;if(Date.now()-lastOk>20000)retry=0;const again=want&&was&&ev.code!==1000&&retry<4;if(was||ev.code!==1000)toast("Call band ("+ev.code+") "+(ev.reason||"").slice(0,80));stop(true,again);if(again){retry++;toast("Dobara jud rahi hoon...");setTimeout(()=>{if(want&&!live&&!ws)start()},1200)}};
 }
 function mic(){
   src=actx.createMediaStreamSource(stream);proc=actx.createScriptProcessor(4096,1,1);
@@ -530,9 +530,9 @@ function mic(){
   };
   src.connect(proc);proc.connect(actx.destination);
 }
-function stop(fromClose){
+function stop(fromClose,keep){
   live=false;clearInterval(fT);clearInterval(kA);if(cam)camMsg();
-  if(NA){NA.orb({talk:false}).catch(()=>{});NA.fg({on:false}).catch(()=>{});NA.wake({action:"resume"}).catch(()=>{})}
+  if(NA){NA.orb({talk:false}).catch(()=>{});if(!keep){NA.fg({on:false}).catch(()=>{});NA.wake({action:"resume"}).catch(()=>{})}}
   try{proc&&proc.disconnect();src&&src.disconnect()}catch(e){}
   stream&&stream.getTracks().forEach(t=>t.stop());
   stopPlay();try{actx&&actx.close()}catch(e){}
@@ -541,9 +541,9 @@ function stop(fromClose){
   $("call").classList.remove("on");$("call").innerHTML="";$("call").insertAdjacentHTML("afterbegin",'<i data-ic="mic" data-sz="34"></i>');icons();
   stat("Call chalane ke liye neeche neela button dabao");
 }
-$("call").onclick=()=>live||ws?stop():start();
+$("call").onclick=()=>{if(live||ws){want=false;stop()}else{want=true;retry=0;start()}};
 /* ===== "Hey Nyra" wake-word + offline commands (sab phone par, Vosk Hindi model) ===== */
-window.nyraWake=async()=>{if(!NA)return;try{const r=await NA.wakePending();if(r&&r.pending&&!live&&!ws)start()}catch(e){}};
+window.nyraWake=async()=>{if(!NA)return;try{const r=await NA.wakePending();if(r&&r.pending&&!live&&!ws){want=true;retry=0;start()}}catch(e){}};
 async function wakeApply(){if(!NA){wkSt();return}try{const r=T.wk?await NA.wake({action:"on",offline:T.wko!==false}):await NA.wake({action:"off"});if(r&&r.ok===false)toast(r.msg);if(T.wk&&r&&r.ok===false){T.wk=false;tSave();document.querySelectorAll('[data-tg="wk"]').forEach(b=>b.setAttribute("aria-pressed","false"))}}catch(e){}setTimeout(wkSt,1500)}
 async function wkSt(){const e=$("wks");if(!e)return;if(!NA){e.textContent="Ye feature sirf Nyra app (APK) me chalta hai.";return}if(!T.wk){e.textContent='App band ho tab bhi "Hey Nyra" bolne par Nyra jaag jaati hai';return}try{const r=await NA.wake({action:"status"});e.textContent=(r.msg||"")+(r.last?' | aakhri suna: '+String(r.last).slice(0,40):"")}catch(x){}}
 

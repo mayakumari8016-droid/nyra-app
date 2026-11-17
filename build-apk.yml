@@ -48,7 +48,7 @@ jobs:
           const fs=require("fs");
           const base="android/app/src/main/";
           const f=base+"AndroidManifest.xml";let x=fs.readFileSync(f,"utf8");
-          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED","WRITE_SECURE_SETTINGS","MANAGE_EXTERNAL_STORAGE","WRITE_EXTERNAL_STORAGE"];
+          const P=["INTERNET","ACCESS_NETWORK_STATE","RECORD_AUDIO","MODIFY_AUDIO_SETTINGS","CAMERA","ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","USE_FULL_SCREEN_INTENT","CALL_PHONE","READ_PHONE_STATE","ANSWER_PHONE_CALLS","READ_CALL_LOG","READ_CONTACTS","SEND_SMS","READ_SMS","RECEIVE_SMS","READ_MEDIA_IMAGES","READ_MEDIA_VIDEO","READ_EXTERNAL_STORAGE","BLUETOOTH","BLUETOOTH_CONNECT","REQUEST_IGNORE_BATTERY_OPTIMIZATIONS","SYSTEM_ALERT_WINDOW","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MICROPHONE","QUERY_ALL_PACKAGES","RECEIVE_BOOT_COMPLETED","WRITE_SECURE_SETTINGS","MANAGE_EXTERNAL_STORAGE","WRITE_EXTERNAL_STORAGE"];
           let a="";for(const p of P)if(!x.includes("android.permission."+p+'"'))a+='    <uses-permission android:name="android.permission.'+p+'" />\n';
           for(const n of ["camera","microphone","location.gps","telephony","bluetooth"])a+='    <uses-feature android:name="android.hardware.'+n+'" android:required="false" />\n';
           x=x.replace("<application",a+"\n    <application");
@@ -115,6 +115,7 @@ jobs:
           mkdir -p android/app/src/main/java/com/nyra/app
           cat > android/app/src/main/java/com/nyra/app/MainActivity.java <<'EOF'
           package com.nyra.app;
+          import android.content.Intent;
           import android.os.Bundle;
           import android.os.Handler;
           import android.os.Looper;
@@ -125,11 +126,12 @@ jobs:
           public class MainActivity extends BridgeActivity {
               private final Handler hd = new Handler(Looper.getMainLooper());
               private boolean visible = true;
+              private final Runnable pk = new Runnable() { @Override public void run() { poke(); } };
               private final Runnable keep = new Runnable() {
                   @Override public void run() {
-                      if (NyraService.running && !visible) {
+                      if (!visible && NyraService.running) {
                           poke();
-                          hd.postDelayed(this, 1500);
+                          hd.postDelayed(this, 700);
                       }
                   }
               };
@@ -139,28 +141,52 @@ jobs:
                   registerPlugin(NyraPerms.class);
                   registerPlugin(NyraActions.class);
                   super.onCreate(b);
+                  try {
+                      WebView w = getBridge().getWebView();
+                      if (w != null) w.getSettings().setMediaPlaybackRequiresUserGesture(false);
+                  } catch (Exception e) {}
               }
 
               /* Android background me WebView ko "hidden" maan kar awaaz/JS rok deta hai.
-                 Call chalu ho to use zabardasti visible dikhate hain taaki mic, speaker aur tools chalte rahein. */
+                 Call chalu ho to use zabardasti visible/resumed rakhte hain taaki mic, speaker aur tools chalte rahein. */
               private void poke() {
                   try {
                       WebView w = getBridge().getWebView();
                       if (w != null) {
+                          w.onResume();
                           w.resumeTimers();
                           w.dispatchWindowVisibilityChanged(View.VISIBLE);
                       }
                   } catch (Exception e) {}
               }
 
+              private void wakeJs() {
+                  if (!NyraWake.pending) return;
+                  int[] d = { 400, 1500, 3500 };
+                  for (int ms : d) {
+                      hd.postDelayed(new Runnable() {
+                          @Override public void run() {
+                              try { getBridge().getWebView().evaluateJavascript("window.nyraWake&&window.nyraWake()", null); } catch (Exception e) {}
+                          }
+                      }, ms);
+                  }
+              }
+
+              @Override
+              protected void onNewIntent(Intent i) {
+                  super.onNewIntent(i);
+                  wakeJs();
+              }
+
               @Override
               public void onPause() {
                   super.onPause();
                   visible = false;
+                  NyraLaunch.appVisible = false;
                   if (NyraService.running) {
                       poke();
                       hd.removeCallbacks(keep);
-                      hd.postDelayed(keep, 300);
+                      hd.postDelayed(keep, 150);
                       NyraService.showOrb(true);
                   }
               }
@@ -168,23 +194,23 @@ jobs:
               @Override
               public void onStop() {
                   super.onStop();
-                  if (NyraService.running) poke();
+                  if (NyraService.running) {
+                      poke();
+                      hd.postDelayed(pk, 100);
+                      hd.postDelayed(pk, 400);
+                  }
               }
 
               @Override
               public void onResume() {
                   super.onResume();
                   visible = true;
+                  NyraLaunch.appVisible = true;
+                  NyraLaunch.clear(this);
                   hd.removeCallbacks(keep);
                   NyraService.showOrb(false);
                   NyraSecure.ensure(this);
-                  if (NyraWake.pending) {
-                      hd.postDelayed(new Runnable() {
-                          @Override public void run() {
-                              try { getBridge().getWebView().evaluateJavascript("window.nyraWake&&window.nyraWake()", null); } catch (Exception e) {}
-                          }
-                      }, 600);
-                  }
+                  wakeJs();
               }
           }
           EOF
@@ -675,9 +701,9 @@ jobs:
                   if (i == null) i = findLaunch(pm, n, false);
                   if (i == null) { call.resolve(res(false, n + " naam ka app nahi mila")); return; }
                   try {
-                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      getContext().startActivity(i);
-                      call.resolve(res(true, n + " khul gaya"));
+                      boolean bl = NyraLaunch.blocked(getContext());
+                      NyraLaunch.go(getContext(), i, n, n + " kholne ke liye dabao", false);
+                      call.resolve(res(true, bl ? "Android ne background se app kholne se roka. Upar notification aayi hai, user use dabaye." : n + " khul gaya"));
                   } catch (Exception e) {
                       call.resolve(res(false, "app nahi khula: " + e.getMessage()));
                   }
@@ -717,20 +743,21 @@ jobs:
                       @Override public void run() {
                           String vid = null;
                           if (play && !q.isEmpty()) vid = findVideoId(q);
+                          boolean bl = NyraLaunch.blocked(c);
                           try {
                               Uri u;
                               if (vid != null) u = Uri.parse("https://www.youtube.com/watch?v=" + vid);
                               else if (q.isEmpty()) u = Uri.parse("https://www.youtube.com/");
                               else u = Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q));
                               Intent i = new Intent(Intent.ACTION_VIEW, u);
-                              i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                               i.setPackage("com.google.android.youtube");
-                              try { c.startActivity(i); }
-                              catch (ActivityNotFoundException e) { i.setPackage(null); c.startActivity(i); }
+                              if (i.resolveActivity(c.getPackageManager()) == null) i.setPackage(null);
+                              NyraLaunch.go(c, i, "YouTube", q.isEmpty() ? "YouTube kholne ke liye dabao" : q + " chalane ke liye dabao", false);
                           } catch (Exception e) {
                               call.resolve(res(false, "YouTube nahi khula: " + e.getMessage() + ". Agar app background me hai to Menu > Permissions me 'Dusre apps ke upar dikhna' on karo."));
                               return;
                           }
+                          if (bl) { call.resolve(res(true, "Android ne background se YouTube kholne se roka. Upar notification aayi hai, user use dabaye. (Menu > Permissions me Accessibility ya 'Dusre apps ke upar dikhna' on ho to ye apne aap khulega)")); return; }
                           if (!play || q.isEmpty()) { call.resolve(res(true, "YouTube khul gaya")); return; }
                           if (vid != null) { call.resolve(res(true, "video seedha chala diya: " + q)); return; }
                           if (NyraAccessibility.inst == null) {
@@ -992,6 +1019,76 @@ jobs:
                       }
                   } catch (Exception e) {}
                   call.resolve(res(true, "ok"));
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/nyra/app/NyraLaunch.java <<'EOF'
+          package com.nyra.app;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+
+          /* Background se activity kholna: Android 10+ ise rok deta hai. Isliye: Accessibility se kholo, nahi to upar wali notification (heads-up + full-screen) dikhao */
+          public class NyraLaunch {
+              public static volatile boolean appVisible = false;
+              private static final int NID = 9;
+
+              public static void clear(Context c) {
+                  try { ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(NID); } catch (Exception e) {}
+              }
+
+              /* true = background se seedha kholna shayad Android rok dega */
+              public static boolean blocked(Context c) {
+                  try {
+                      return Build.VERSION.SDK_INT >= 29 && !appVisible && NyraAccessibility.inst == null && !Settings.canDrawOverlays(c);
+                  } catch (Exception e) { return false; }
+              }
+
+              private static void screenOn(Context c) {
+                  try {
+                      PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+                      if (pm.isInteractive()) return;
+                      PowerManager.WakeLock w = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, "nyra:screen");
+                      w.acquire(4000);
+                  } catch (Exception e) {}
+              }
+
+              private static void notice(final Context c, Intent i, String title, String text) {
+                  try {
+                      NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          NotificationChannel ch = new NotificationChannel("nyra_alert", "Nyra alerts", NotificationManager.IMPORTANCE_HIGH);
+                          ch.setSound(null, null);
+                          nm.createNotificationChannel(ch);
+                      }
+                      PendingIntent pi = PendingIntent.getActivity(c, 9, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                      Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, "nyra_alert") : new Notification.Builder(c);
+                      b.setContentTitle(title).setContentText(text).setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                          .setContentIntent(pi).setFullScreenIntent(pi, true).setAutoCancel(true).setCategory(Notification.CATEGORY_CALL);
+                      if (Build.VERSION.SDK_INT < 26) b.setPriority(Notification.PRIORITY_HIGH);
+                      nm.notify(NID, b.build());
+                      new Handler(Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() { clear(c); } }, 12000);
+                  } catch (Exception e) {}
+              }
+
+              /* force = true: hamesha notification bhi dikhao (Hey Nyra jagane ke liye) */
+              public static void go(Context c, Intent i, String title, String text, boolean force) {
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  if (!appVisible && (force || blocked(c))) { screenOn(c); notice(c, i, title, text); }
+                  try {
+                      NyraAccessibility a = NyraAccessibility.inst;
+                      if (!appVisible && a != null) a.startActivity(i); else c.startActivity(i);
+                  } catch (Exception e) {
+                      try { c.startActivity(i); } catch (Exception e2) {}
+                  }
               }
           }
           EOF
@@ -1344,8 +1441,9 @@ jobs:
               private static boolean torchOn = false;
 
               /* wake ke naam ke alag alag sunne wale roop. Agar tumhari awaaz par na jage to yahan aur roop jodo */
-              private static final String[] PRE = { "हे", "हेय", "हेइ", "अरे" };
-              private static final String[] NAME = { "नायरा", "नाइरा", "नैरा", "नीरा", "निरा", "नायेरा", "नायरा" };
+              /* "Hey Nyra" ko Hindi model alag alag tarah sunta hai (नीरा, निया, माया...). Isliye awaaz ke vyanjan (skeleton) se pehchante hain */
+              private static final String[] PRE = { "हे", "हेय", "हेइ", "हेई", "अरे", "ए", "है", "हाय", "हाई", "हाइ", "हैलो", "हेलो", "ओ", "ओए", "बाय", "बाइ", "बैकअप", "वेकअप", "अप", "जाग", "जागो" };
+              private static final String[] STRONG = { "नायरा", "नाइरा", "नायेरा", "नैरा", "नायरे" };
 
               @Override public IBinder onBind(Intent i) { return null; }
 
@@ -1439,21 +1537,30 @@ jobs:
               }
 
               /* ---------- main loop ---------- */
-              private String grammar() {
-                  StringBuilder sb = new StringBuilder("[");
-                  for (String p : PRE) for (String n : NAME) sb.append("\"").append(p).append(" ").append(n).append("\",");
-                  sb.append("\"[unk]\"]");
-                  return sb.toString();
-              }
-
               private static String txt(String json, String key) {
                   try { return new JSONObject(json).optString(key, "").trim(); } catch (Exception e) { return ""; }
               }
 
+              private static String skel(String w) {
+                  StringBuilder sb = new StringBuilder();
+                  for (int k = 0; k < w.length(); k++) { char ch = w.charAt(k); if (ch >= 0x0915 && ch <= 0x0939) sb.append(ch); }
+                  return sb.toString();
+              }
+
               private boolean isWake(String t) {
-                  String s = nz(t);
+                  String s = nz(t).trim();
                   if (s.isEmpty()) return false;
-                  for (String n : NAME) if (s.contains(nz(n))) return true;
+                  for (String n : STRONG) if (s.contains(nz(n))) return true;
+                  String[] tk = s.split("\\s+");
+                  for (int k = 0; k < tk.length; k++) {
+                      String w = tk[k];
+                      String sk = skel(w);
+                      if (sk.equals("नयर")) return true;
+                      boolean weak = sk.equals("नर") || sk.equals("नय") || sk.equals("मय");
+                      if (!weak || w.equals("नया") || w.equals("नये") || w.equals("नयी")) continue;
+                      if (tk.length <= 2) return true;
+                      if (k > 0) for (String p : PRE) if (tk[k - 1].equals(nz(p))) return true;
+                  }
                   return false;
               }
 
@@ -1477,7 +1584,7 @@ jobs:
                   AudioRecord ar = null;
                   try {
                       ensureModel();
-                      wk = new Recognizer(model, 16000f, grammar());
+                      wk = new Recognizer(model, 16000f);
                       cm = new Recognizer(model, 16000f);
                   } catch (Throwable e) {
                       status = "Hindi model nahi mila ya khula nahi: " + e.getMessage();
@@ -1546,17 +1653,17 @@ jobs:
                   try { cm.close(); } catch (Throwable e) {}
               }
 
-              /* app kholo aur live call shuru karwao */
+              /* app kholo aur live call shuru karwao: pehle upar notification, phir app */
               private void launch() {
                   try {
                       pending = true;
                       pauseUntil = System.currentTimeMillis() + 20000;
                       Intent i = new Intent(this, MainActivity.class);
                       i.putExtra("nyra_wake", true);
-                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-                      startActivity(i);
+                      i.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                      NyraLaunch.go(this, i, "Nyra jaag gayi", "Baat karne ke liye yahan dabao", true);
                   } catch (Exception e) {
-                      status = "app nahi khuli (Dusre apps ke upar dikhna on karo): " + e.getMessage();
+                      status = "app nahi khuli: " + e.getMessage();
                   }
               }
 
@@ -1712,8 +1819,7 @@ jobs:
                   }
                   if (best == null) return false;
                   try {
-                      best.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      startActivity(best);
+                      NyraLaunch.go(this, best, n, n + " kholne ke liye dabao", false);
                       return true;
                   } catch (Exception e) { return false; }
               }
