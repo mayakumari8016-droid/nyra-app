@@ -102,13 +102,67 @@ jobs:
           cat > android/app/src/main/java/com/nyra/app/MainActivity.java <<'EOF'
           package com.nyra.app;
           import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.View;
+          import android.webkit.WebView;
           import com.getcapacitor.BridgeActivity;
+
           public class MainActivity extends BridgeActivity {
+              private final Handler hd = new Handler(Looper.getMainLooper());
+              private boolean visible = true;
+              private final Runnable keep = new Runnable() {
+                  @Override public void run() {
+                      if (NyraService.running && !visible) {
+                          poke();
+                          hd.postDelayed(this, 1500);
+                      }
+                  }
+              };
+
               @Override
               public void onCreate(Bundle b) {
                   registerPlugin(NyraPerms.class);
                   registerPlugin(NyraActions.class);
                   super.onCreate(b);
+              }
+
+              /* Android background me WebView ko "hidden" maan kar awaaz/JS rok deta hai.
+                 Call chalu ho to use zabardasti visible dikhate hain taaki mic, speaker aur tools chalte rahein. */
+              private void poke() {
+                  try {
+                      WebView w = getBridge().getWebView();
+                      if (w != null) {
+                          w.resumeTimers();
+                          w.dispatchWindowVisibilityChanged(View.VISIBLE);
+                      }
+                  } catch (Exception e) {}
+              }
+
+              @Override
+              public void onPause() {
+                  super.onPause();
+                  visible = false;
+                  if (NyraService.running) {
+                      poke();
+                      hd.removeCallbacks(keep);
+                      hd.postDelayed(keep, 300);
+                      NyraService.showOrb(true);
+                  }
+              }
+
+              @Override
+              public void onStop() {
+                  super.onStop();
+                  if (NyraService.running) poke();
+              }
+
+              @Override
+              public void onResume() {
+                  super.onResume();
+                  visible = true;
+                  hd.removeCallbacks(keep);
+                  NyraService.showOrb(false);
               }
           }
           EOF
@@ -633,6 +687,54 @@ jobs:
                   call.resolve(res(ok, ok ? "likh diya" : "koi text box nahi mila"));
               }
 
+              private java.io.File nyraDir() {
+                  java.io.File d = getContext().getExternalFilesDir("Nyra");
+                  if (d == null) d = new java.io.File(getContext().getFilesDir(), "Nyra");
+                  d.mkdirs();
+                  return d;
+              }
+
+              @PluginMethod
+              public void saveFile(PluginCall call) {
+                  try {
+                      String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
+                      String d = call.getString("data", "");
+                      java.io.File f = new java.io.File(nyraDir(), n);
+                      java.io.FileOutputStream o = new java.io.FileOutputStream(f);
+                      o.write(d.getBytes("UTF-8"));
+                      o.close();
+                      call.resolve(res(true, f.getAbsolutePath()));
+                  } catch (Exception e) {
+                      call.resolve(res(false, "file save nahi hui: " + e.getMessage()));
+                  }
+              }
+
+              @PluginMethod
+              public void loadFile(PluginCall call) {
+                  try {
+                      String n = call.getString("name", "data.json").replaceAll("[^A-Za-z0-9._-]", "_");
+                      java.io.File f = new java.io.File(nyraDir(), n);
+                      if (!f.exists()) { call.resolve(res(false, "file nahi hai")); return; }
+                      java.io.FileInputStream in = new java.io.FileInputStream(f);
+                      java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                      byte[] buf = new byte[8192];
+                      int k;
+                      while ((k = in.read(buf)) > 0) bo.write(buf, 0, k);
+                      in.close();
+                      JSObject o = res(true, "ok");
+                      o.put("data", bo.toString("UTF-8"));
+                      call.resolve(o);
+                  } catch (Exception e) {
+                      call.resolve(res(false, "file nahi padhi: " + e.getMessage()));
+                  }
+              }
+
+              @PluginMethod
+              public void orb(PluginCall call) {
+                  NyraService.talk(Boolean.TRUE.equals(call.getBoolean("talk", false)));
+                  call.resolve(res(true, "ok"));
+              }
+
               @PluginMethod
               public void fg(PluginCall call) {
                   try {
@@ -650,18 +752,61 @@ jobs:
           EOF
           cat > android/app/src/main/java/com/nyra/app/NyraService.java <<'EOF'
           package com.nyra.app;
+          import android.animation.ValueAnimator;
           import android.app.Notification;
           import android.app.NotificationChannel;
           import android.app.NotificationManager;
           import android.app.PendingIntent;
           import android.app.Service;
+          import android.content.Context;
           import android.content.Intent;
           import android.content.pm.ServiceInfo;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.PixelFormat;
+          import android.graphics.RadialGradient;
+          import android.graphics.RectF;
+          import android.graphics.Shader;
+          import android.graphics.SweepGradient;
           import android.os.Build;
+          import android.os.Handler;
           import android.os.IBinder;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.view.animation.LinearInterpolator;
 
           public class NyraService extends Service {
+              public static volatile boolean running = false;
+              private static volatile NyraService inst;
+              private final Handler hd = new Handler(Looper.getMainLooper());
+              private PowerManager.WakeLock wl;
+              private WindowManager wm;
+              private OrbView ov;
+              private WindowManager.LayoutParams lp;
+              private boolean wantOrb = false;
+              private boolean wantTalk = false;
+
               @Override public IBinder onBind(Intent i) { return null; }
+
+              /* background me chhota orb dikhao / chhupao */
+              public static void showOrb(final boolean show) {
+                  final NyraService s = inst;
+                  if (s == null) return;
+                  s.hd.post(new Runnable() { @Override public void run() { s.setOrb(show); } });
+              }
+
+              /* bolte waqt orb dhadakta hai */
+              public static void talk(final boolean t) {
+                  final NyraService s = inst;
+                  if (s == null) return;
+                  s.hd.post(new Runnable() { @Override public void run() { s.wantTalk = t; if (s.ov != null) s.ov.talk = t; } });
+              }
 
               @Override
               public int onStartCommand(Intent in, int flags, int id) {
@@ -675,15 +820,173 @@ jobs:
                       o.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
                       PendingIntent pi = PendingIntent.getActivity(this, 0, o, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
                       Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
-                      b.setContentTitle("Nyra chalu hai").setContentText("Sun rahi hai...")
+                      b.setContentTitle("Nyra chalu hai").setContentText("Background me bhi sun rahi hai...")
                           .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(pi).setOngoing(true);
                       Notification n = b.build();
                       if (Build.VERSION.SDK_INT >= 30) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
                       else startForeground(7, n);
+                      inst = this;
+                      running = true;
+                      if (wl == null) {
+                          PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                          wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nyra:live");
+                          wl.acquire(6 * 60 * 60 * 1000L);
+                      }
                   } catch (Exception e) {
                       stopSelf();
                   }
                   return START_STICKY;
+              }
+
+              private void setOrb(boolean show) {
+                  wantOrb = show;
+                  if (!show) {
+                      if (ov != null) {
+                          try { ov.stop(); wm.removeView(ov); } catch (Exception e) {}
+                          ov = null;
+                      }
+                      return;
+                  }
+                  if (ov != null) return;
+                  try {
+                      if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) return;
+                      wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                      float d = getResources().getDisplayMetrics().density;
+                      int sz = (int) (64 * d);
+                      int type = Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+                      lp = new WindowManager.LayoutParams(sz, sz, type,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.TRANSLUCENT);
+                      lp.gravity = Gravity.TOP | Gravity.START;
+                      lp.x = getResources().getDisplayMetrics().widthPixels - sz - (int) (10 * d);
+                      lp.y = (int) (140 * d);
+                      ov = new OrbView(this);
+                      ov.talk = wantTalk;
+                      ov.setOnTouchListener(new View.OnTouchListener() {
+                          float dx, dy;
+                          int sx, sy;
+                          boolean mv;
+                          @Override public boolean onTouch(View v, MotionEvent e) {
+                              int a = e.getAction();
+                              if (a == MotionEvent.ACTION_DOWN) {
+                                  dx = e.getRawX(); dy = e.getRawY(); sx = lp.x; sy = lp.y; mv = false;
+                                  return true;
+                              } else if (a == MotionEvent.ACTION_MOVE) {
+                                  float mx = e.getRawX() - dx, my = e.getRawY() - dy;
+                                  if (Math.abs(mx) > 12 || Math.abs(my) > 12) mv = true;
+                                  if (mv) {
+                                      lp.x = sx + (int) mx;
+                                      lp.y = sy + (int) my;
+                                      try { wm.updateViewLayout(ov, lp); } catch (Exception x) {}
+                                  }
+                                  return true;
+                              } else if (a == MotionEvent.ACTION_UP) {
+                                  if (!mv) openApp();
+                                  return true;
+                              }
+                              return false;
+                          }
+                      });
+                      wm.addView(ov, lp);
+                      ov.start();
+                  } catch (Exception e) {
+                      ov = null;
+                  }
+              }
+
+              private void openApp() {
+                  try {
+                      Intent i = new Intent(this, MainActivity.class);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                      startActivity(i);
+                  } catch (Exception e) {}
+              }
+
+              @Override
+              public void onTaskRemoved(Intent rootIntent) {
+                  stopSelf();
+                  super.onTaskRemoved(rootIntent);
+              }
+
+              @Override
+              public void onDestroy() {
+                  setOrb(false);
+                  try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception e) {}
+                  wl = null;
+                  running = false;
+                  inst = null;
+                  super.onDestroy();
+              }
+
+              /* chhota gol orb: bahar ghoomta ring, beech me ghoomta sitara */
+              static class OrbView extends View {
+                  volatile boolean talk = false;
+                  private float ang = 0f;
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Path star = new Path();
+                  private final RectF rc = new RectF();
+                  private final ValueAnimator va;
+
+                  OrbView(Context c) {
+                      super(c);
+                      va = ValueAnimator.ofFloat(0f, 360f);
+                      va.setDuration(3000);
+                      va.setRepeatCount(ValueAnimator.INFINITE);
+                      va.setInterpolator(new LinearInterpolator());
+                      va.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                          @Override public void onAnimationUpdate(ValueAnimator a) {
+                              ang = (Float) a.getAnimatedValue();
+                              invalidate();
+                          }
+                      });
+                  }
+
+                  void start() { if (!va.isStarted()) va.start(); }
+                  void stop() { va.cancel(); }
+
+                  @Override
+                  protected void onDraw(Canvas cv) {
+                      float w = getWidth(), c = w / 2f, d = getResources().getDisplayMetrics().density;
+                      float pulse = talk ? 1f + 0.07f * (float) Math.sin(Math.toRadians(ang * 4)) : 1f;
+                      float r = c * 0.94f * pulse;
+                      p.setStyle(Paint.Style.FILL);
+                      p.setShader(new RadialGradient(c, c, r, new int[] { 0xFFFF7AB8, 0xFFC13A96, 0xFF4D1D86, 0x00150D2B },
+                          new float[] { 0f, 0.45f, 0.8f, 1f }, Shader.TileMode.CLAMP));
+                      cv.drawCircle(c, c, r, p);
+                      p.setShader(null);
+                      p.setColor(0xFF0F0820);
+                      cv.drawCircle(c, c, r * 0.58f, p);
+                      p.setStyle(Paint.Style.STROKE);
+                      p.setStrokeWidth(2 * d);
+                      p.setColor(0xFFFF9FCF);
+                      cv.drawCircle(c, c, r * 0.58f, p);
+
+                      cv.save();
+                      cv.rotate(-ang, c, c);
+                      p.setStrokeWidth(3 * d);
+                      p.setStrokeCap(Paint.Cap.ROUND);
+                      p.setShader(new SweepGradient(c, c, new int[] { 0x007EEAD0, 0xFF7EEAD0 }, new float[] { 0f, 0.75f }));
+                      rc.set(c - r * 0.8f, c - r * 0.8f, c + r * 0.8f, c + r * 0.8f);
+                      cv.drawArc(rc, 0f, 270f, false, p);
+                      p.setShader(null);
+                      cv.restore();
+
+                      cv.save();
+                      cv.rotate(ang / 2f, c, c);
+                      star.reset();
+                      float R = r * 0.36f, ri = R * 0.38f;
+                      for (int i = 0; i < 8; i++) {
+                          double a = Math.toRadians(i * 45 - 90);
+                          float rr = (i % 2 == 0) ? R : ri;
+                          float x = c + (float) Math.cos(a) * rr, y = c + (float) Math.sin(a) * rr;
+                          if (i == 0) star.moveTo(x, y); else star.lineTo(x, y);
+                      }
+                      star.close();
+                      p.setStyle(Paint.Style.FILL);
+                      p.setColor(0xFFFFD3EA);
+                      cv.drawPath(star, p);
+                      cv.restore();
+                  }
               }
           }
           EOF

@@ -179,6 +179,9 @@ nav .t.on{background:linear-gradient(#4f8cff,#2358d6);color:#fff}
 <div class="card"><div><b>YouTube script</b><small>5 steps · likhna · built-in</small></div><button class="go" data-task="Mere liye ek YouTube video ki script likhne me step by step madad karo. Pehle mujhse topic poochho."><i data-ic="play"></i>Chalao</button></div>
 <div class="card"><div><b>Title aur description</b><small>4 steps · YouTube · built-in</small></div><button class="go" data-task="Mere YouTube video ke liye 5 catchy title aur ek achha description banao. Pehle video ka topic poochho."><i data-ic="play"></i>Chalao</button></div>
 <div class="card"><div><b>Video idea</b><small>3 steps · sawaal · built-in</small></div><button class="go" data-task="Mujhe YouTube ke liye 5 naye video ideas do. Pehle meri pasand poochho."><i data-ic="play"></i>Chalao</button></div>
+<div class="bar" style="margin-top:6px"><input id="tkn" placeholder="Naya task sikhao: naam likho..." autocomplete="off"><button class="send" id="tkb" aria-label="Sikhana shuru karo">&#9679;</button></div>
+<small id="tkh" style="display:block;color:#6b7aa6;font-size:13px;line-height:1.4;padding:2px 8px 6px"></small>
+<div id="tkl" style="display:flex;flex-direction:column;gap:8px"></div>
 <div class="card"><div><b>Baat ke baad khud yaad rakhe</b><small>Har baat khatam hone par kaam ki baatein save karti hai</small></div><button class="sw" id="auto" aria-label="Auto remember" aria-pressed="true"></button></div>
 <button class="pbtn" id="mdl">Yaadein download karo</button>
 </div>
@@ -339,8 +342,11 @@ const FD=[
 {name:"record_video",description:"Video recording shuru ya band karo",parameters:{type:"OBJECT",properties:{action:{type:"STRING",enum:["start","stop"]}},required:["action"]}},
 {name:"open_tab",description:"App ka tab kholo: home, scan, mem (yaadein), chat",parameters:{type:"OBJECT",properties:{name:{type:"STRING",enum:["home","scan","mem","chat"]}},required:["name"]}},
 {name:"sub_agent",description:"Bada ya lamba kaam (coding, research, lamba likhna) background sub-agent ko do. Wo kaam karke result lautata hai",parameters:{type:"OBJECT",properties:{task:{type:"STRING"}},required:["task"]}},
-{name:"save_memory",description:"User ke baare me kaam ki baat yaad rakho",parameters:{type:"OBJECT",properties:{fact:{type:"STRING"}},required:["fact"]}}];
-async function runTool(n,a){a=a||{};
+{name:"save_memory",description:"User ke baare me kaam ki baat yaad rakho",parameters:{type:"OBJECT",properties:{fact:{type:"STRING"}},required:["fact"]}},
+{name:"learn_start",description:"Naya task seekhna shuru karo: ab se jo steps karoge wo yaad rahenge",parameters:{type:"OBJECT",properties:{name:{type:"STRING"}},required:["name"]}},
+{name:"learn_finish",description:"Seekha hua task save karo"},
+{name:"run_task",description:"Pehle se sikha hua task naam se chalao",parameters:{type:"OBJECT",properties:{name:{type:"STRING"}},required:["name"]}}];
+async function runTool0(n,a){a=a||{};
  switch(n){
  case"open_youtube":if(NA)return await na("youtube",{query:a.query||"",play:false});return openUrl(a.query?"https://www.youtube.com/results?search_query="+encodeURIComponent(a.query):"https://www.youtube.com/");
  case"youtube_play":return await na("youtube",{query:a.query||"",play:true});
@@ -363,6 +369,45 @@ async function runTool(n,a){a=a||{};
  case"sub_agent":return await subAsk(a.task||"");
  case"save_memory":if($("auto").getAttribute("aria-pressed")!=="true")return "auto yaad rakhna band hai";return addMem(a.fact)?"yaad kar liya":"khaali";
  }return "unknown tool"}
+/* ===== sikhe hue tasks: step by step record, save, replay ===== */
+const TK_TOOLS=["open_youtube","youtube_play","open_app","media_control","tap_text","tap_position","scroll_screen","press_key","type_text","open_link"];
+const TK_BAD=/nahi (mila|hua|khula|chala|daba)|error|on nahi hai|chahiye|galat|sirf|naya plugin/i;
+const TK_SLOW=["open_app","youtube_play","open_youtube","open_link"];
+let TK=[];try{TK=JSON.parse(localStorage.getItem("nyra_tasks")||"[]")}catch(e){}
+let tkRec=null,tkTurn=[],tkPlay=false,tkLastU="";
+function tkTxtOf(s){const a=s.a||{};switch(s.n){case"open_app":return a.name+" kholo";case"youtube_play":return "YouTube: "+a.query;case"open_youtube":return "YouTube"+(a.query?": "+a.query:"");case"tap_text":return "'"+a.text+"' dabao";case"tap_position":return "tap";case"scroll_screen":return "scroll";case"press_key":return a.key;case"type_text":return "likho";case"media_control":return a.action;case"open_link":return "link"}return s.n}
+function tkPersist(){const j=JSON.stringify(TK);try{localStorage.setItem("nyra_tasks",j)}catch(e){}if(NA)NA.saveFile({name:"nyra-tasks.json",data:j}).catch(()=>{})}
+function tkSaveTask(name,steps){name=(name||"").trim().slice(0,40)||"Mera task";steps=steps.slice(0,40);if(!steps.length)return false;const i=TK.findIndex(t=>t.name.toLowerCase()===name.toLowerCase());const t={name,steps,runs:i>=0?TK[i].runs||0:0,at:Date.now()};if(i>=0)TK[i]=t;else TK.push(t);TK=TK.slice(-30);tkPersist();tkRender();return true}
+function tkStart(n){tkRec={name:(n||"").trim()||"Mera task",steps:[]};tkTurn=[];tkRender();return "seekhna shuru, ab user jo kaam bataye wo karo"}
+function tkFinish(){if(!tkRec)return "abhi koi task seekha nahi ja raha";const r=tkRec;tkRec=null;const ok=tkSaveTask(r.name,r.steps);tkRender();return ok?"task save ho gaya: "+r.name+" ("+r.steps.length+" steps)":"koi step nahi hua, isliye save nahi kiya"}
+function tkAuto(){const st=tkTurn;tkTurn=[];if(tkRec||tkPlay||st.length<2)return;if($("auto").getAttribute("aria-pressed")!=="true")return;const n=tkLastU.trim().slice(0,40)||"Naya task";if(tkSaveTask(n,st))toast("Task seekh liya: "+n)}
+async function tkReplay(t){if(tkPlay){toast("Ek task pehle se chal raha hai");return "ek task pehle se chal raha hai"}tkPlay=true;let ok=0;
+  try{for(let i=0;i<t.steps.length;i++){const s=t.steps[i];toast((i+1)+"/"+t.steps.length+": "+tkTxtOf(s));let r="";
+      for(let k=0;k<(s.n==="tap_text"?6:1);k++){r=String(await runTool0(s.n,s.a));if(!TK_BAD.test(r))break;await wait(1000)}
+      if(TK_BAD.test(r)){toast("Ruk gayi: "+tkTxtOf(s));return "step "+(i+1)+" par ruki: "+r}
+      ok++;await wait(TK_SLOW.includes(s.n)?3500:1300)}}
+  finally{tkPlay=false}
+  t.runs=(t.runs||0)+1;tkPersist();tkRender();toast("Task poora hua");return "task poora hua ("+ok+" steps)"}
+function tkByName(n){n=(n||"").trim().toLowerCase();return TK.find(t=>t.name.toLowerCase()===n)||TK.find(t=>t.name.toLowerCase().includes(n)||n.includes(t.name.toLowerCase()))}
+async function runTool(n,a){a=a||{};
+  if(n==="learn_start")return tkStart(a.name);
+  if(n==="learn_finish")return tkFinish();
+  if(n==="run_task"){const t=tkByName(a.name);if(!t)return "is naam ka task nahi mila. Sikhe hue: "+(TK.map(x=>x.name).join(", ")||"koi nahi");tkReplay(t);return "task chal raha hai: "+t.name}
+  const r=await runTool0(n,a);
+  if(!tkPlay&&TK_TOOLS.includes(n)&&!TK_BAD.test(String(r))&&!(n==="type_text"&&BAD.test(a.text||""))){const st={n,a:Object.assign({},a)};tkTurn.push(st);if(tkRec){tkRec.steps.push(st);tkRender()}}
+  return r}
+function tkTxt(){let t=" TASK SIKHNA: jab user bole 'ye kaam seekh lo' ya 'yaad kar lo kaise karna hai', pehle learn_start (naam ke saath) call karo, phir user ke kehne par kaam karo, aur jab user bole 'bas ho gaya' tab learn_finish call karo. Bina kahe bhi do ya zyada steps wale kaam apne aap yaad ho jaate hain.";if(TK.length)t+=" SIKHE HUE TASKS: "+TK.map(x=>x.name).join(", ")+". Jab user inme se koi kaam maange to run_task tool naam ke saath chalao, steps dobara mat bolo.";return t}
+function tkRender(){const l=$("tkl");if(!l)return;l.innerHTML="";const rb=$("tkb"),h=$("tkh");
+  if(tkRec){rb.innerHTML="&#9632;";rb.setAttribute("aria-label","Save karo");h.textContent="\u25cf Seekh rahi hoon \u2014 "+tkRec.steps.length+" steps. Neela mic dabao, Nyra se kaam karwao, phir \u25a0 dabao."}
+  else{rb.innerHTML="&#9679;";rb.setAttribute("aria-label","Sikhana shuru karo");h.textContent=TK.length?"":"Naam likho, \u25cf dabao, neela mic dabake Nyra se kaam karwao. Wo har step yaad rakhegi, ek ke baad ek app bhi."}
+  TK.slice().reverse().forEach(t=>{const i=TK.indexOf(t);const c=document.createElement("div");c.className="card";
+    c.innerHTML='<div style="min-width:0"><b></b><small></small></div><div style="display:flex;align-items:center;gap:8px;flex:none"><button class="go"></button><button class="go" aria-label="Hatao" style="color:#9aa6c9">\u2715</button></div>';
+    c.querySelector("b").textContent=t.name;c.querySelector("small").textContent=t.steps.length+" steps \u00b7 "+t.steps.map(tkTxtOf).slice(0,4).join(" \u2192 ")+(t.steps.length>4?" ...":"");
+    const bs=c.querySelectorAll("button");bs[0].textContent="\u25b6 Chalao";bs[0].onclick=()=>{tkReplay(t)};
+    bs[1].onclick=()=>{if(confirm(t.name+" hata dein?")){TK.splice(i,1);tkPersist();tkRender()}};l.appendChild(c)})}
+$("tkb").onclick=()=>{if(tkRec){toast(tkFinish());return}tkStart($("tkn").value);$("tkn").value=""};
+if(NA&&!TK.length)NA.loadFile({name:"nyra-tasks.json"}).then(r=>{if(r&&r.ok&&r.data){try{TK=JSON.parse(r.data)||[];localStorage.setItem("nyra_tasks",r.data)}catch(e){}tkRender()}}).catch(()=>{});
+tkRender();
 function tab(n){
   document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id==="s-"+n));
   document.querySelectorAll("nav .t").forEach(b=>b.classList.toggle("on",b.dataset.tab===n));
@@ -398,7 +443,7 @@ const TOOLS_TXT=" Tumhare paas tools hain: YouTube kholna aur gaana/video apne a
 function mem(){try{return JSON.parse(localStorage.getItem("nyra_mem")||"[]")}catch(e){return[]}}
 const GRAM=" BOLNE KA TARIKA: Hamesha ladki ki tarah feminine grammar use karo (kar rahi hoon, khol rahi hoon, dekh rahi hoon, gayi, aayi), kabhi raha hoon, karta hoon, gaya nahi. Har vaakya poora aur saaf bolo. Adhure ya tute shabd, le-de-ke jaise faltu filler aur ek hi shabd baar baar mat bolo. Tool ke result sirf data hote hain, unhe apne shabdon me feminine grammar me batao.";
 function sysText(){const m=mem(),np=S.pe&&S.pe!=="main"&&PS[S.pe];return (np?"VOICE AND ACCENT, MOST IMPORTANT, apply to every single word you speak, in every language: "+PS[S.pe]+" Never drop this style, even for Hindi words. ":"")+"Tumhara naam "+(np?S.pe:S.name)+" hai. "+(np?"Tum ek AI assistant ho, phone call ki tarah chhote natural jawab do, Hinglish me. User beech me toke to turant ruk jao.":S.persona)+GRAM+langTxt()+TOOLS_TXT+uTxt()+skTxt()+(m.length?" User ke baare me tumhe ye yaad hai: "+m.join("; ")+".":"")+($("auto").getAttribute("aria-pressed")==="true"?" User koi kaam ki baat bataye (naam, pasand, kaam, plan) to save_memory se yaad rakho.":"")}
-function memSave(a){try{localStorage.setItem("nyra_mem",JSON.stringify(a))}catch(e){}renderMem()}
+function memSave(a){try{localStorage.setItem("nyra_mem",JSON.stringify(a))}catch(e){}if(NA)NA.saveFile({name:"nyra-yaadein.json",data:JSON.stringify(a)}).catch(()=>{});renderMem()}
 function renderMem(){const l=$("mlist");l.innerHTML="";const a=mem();
   if(!a.length){l.innerHTML='<div style="color:var(--dim);font-size:15px;line-height:1.45">Abhi khaali hai. Neeche likho ya bolo "ye yaad rakhna".</div>';return}
   a.forEach((t,i)=>{const d=document.createElement("div");d.className="mi";const s=document.createElement("span");s.textContent=t;const x=document.createElement("button");x.textContent="✕";x.setAttribute("aria-label","Hatao");x.onclick=()=>{const b=mem();b.splice(i,1);memSave(b)};d.append(s,x);l.appendChild(d)})}
@@ -407,9 +452,11 @@ $("madd").onclick=()=>{if(addMem($("mi").value))$("mi").value=""};
 $("mi").onkeydown=e=>{if(e.key==="Enter")$("madd").click()};
 $("mdl").onclick=()=>dl(new Blob([mem().join("\n")||"khaali"],{type:"text/plain"}),"nyra-yaadein.txt");
 renderMem();
+if(NA&&!mem().length)NA.loadFile({name:"nyra-yaadein.json"}).then(r=>{if(r&&r.ok&&r.data){try{const a=JSON.parse(r.data);if(Array.isArray(a)&&a.length)memSave(a)}catch(e){}}}).catch(()=>{});
 
 /* live call */
-let ws,actx,stream,proc,src,playT=0,srcs=[],live=false;
+let ws,actx,stream,proc,src,playT=0,srcs=[],live=false,kA=null;
+function nOrb(t){if(NA)NA.orb({talk:t}).catch(()=>{})}
 const b64=buf=>{let s="";const b=new Uint8Array(buf);for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s)};
 const unb64=s=>{const r=atob(s),u=new Uint8Array(r.length);for(let i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u.buffer};
 function stat(t){$("st").textContent=t}
@@ -419,10 +466,10 @@ function play(b){
   const buf=actx.createBuffer(1,f.length,24000);buf.copyToChannel(f,0);
   const s=actx.createBufferSource();s.buffer=buf;s.connect(actx.destination);
   const t=Math.max(actx.currentTime+0.02,playT);s.start(t);playT=t+buf.duration;
-  srcs.push(s);s.onended=()=>{srcs=srcs.filter(x=>x!==s);if(!srcs.length){$("orb").classList.remove("talk");if(live)stat("Sun rahi hoon")}};
-  $("orb").classList.add("talk");stat("Bol rahi hoon");
+  srcs.push(s);s.onended=()=>{srcs=srcs.filter(x=>x!==s);if(!srcs.length){$("orb").classList.remove("talk");nOrb(false);if(live)stat("Sun rahi hoon")}};
+  $("orb").classList.add("talk");nOrb(true);stat("Bol rahi hoon");
 }
-function stopPlay(){srcs.forEach(s=>{try{s.stop()}catch(e){}});srcs=[];playT=0;$("orb").classList.remove("talk")}
+function stopPlay(){srcs.forEach(s=>{try{s.stop()}catch(e){}});srcs=[];playT=0;$("orb").classList.remove("talk");nOrb(false)}
 async function start(){
   if(!S.key){ppOpen(true);return}
   stat("Jud rahi hoon...");
@@ -430,6 +477,8 @@ async function start(){
   catch(e){stat("Mic ki ijazat chahiye");toast("Chrome me mic ki permission do");return}
   if(NA)NA.fg({on:true}).catch(()=>{});
   actx=new (window.AudioContext||window.webkitAudioContext)();await actx.resume();
+  clearInterval(kA);kA=setInterval(()=>{if(actx&&actx.state!=="running")actx.resume().catch(()=>{})},1500);
+  if(NP)NP.status().then(x=>{if(!x.overlay)toast("Menu > Permissions me 'Dusre apps ke upar dikhna' on karo, tabhi background me orb dikhega aur apps khulenge");else if(!x.battery)toast("Battery optimisation band karo, nahi to background me Nyra chup ho sakti hai");else if(!x.a11y)toast("Accessibility me Nyra on karo, tab wo khud tap karke kaam kar paayegi")}).catch(()=>{});
   const mine=ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(S.key));
   mine.onopen=()=>mine.send(JSON.stringify({setup:{model:"models/"+S.model,generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:S.voice}}}},systemInstruction:{parts:[{text:sysText()}]},tools:[{functionDeclarations:FD}],inputAudioTranscription:{},outputAudioTranscription:{}}}));
   mine.onmessage=async e=>{
@@ -441,9 +490,9 @@ async function start(){
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlay();curA=null}
     if(c.modelTurn)for(const p of c.modelTurn.parts||[])if(p.inlineData&&p.inlineData.data)play(unb64(p.inlineData.data));
-    if(c.inputTranscription&&c.inputTranscription.text){if(!curU)curU=bub("u","");curU.textContent+=c.inputTranscription.text;clog.scrollTop=clog.scrollHeight}
+    if(c.inputTranscription&&c.inputTranscription.text){if(!curU)curU=bub("u","");curU.textContent+=c.inputTranscription.text;tkLastU=curU.textContent;clog.scrollTop=clog.scrollHeight}
     if(c.outputTranscription&&c.outputTranscription.text){curU=null;if(!curA)curA=bub("a","");curA.textContent+=c.outputTranscription.text;clog.scrollTop=clog.scrollHeight}
-    if(c.turnComplete){curU=null;curA=null}
+    if(c.turnComplete){curU=null;curA=null;tkAuto()}
   };
   mine.onerror=()=>{if(ws===mine)stat("Connection error")};
   mine.onclose=ev=>{if(ws!==mine)return;if(live||ev.code!==1000)toast("Call band ("+ev.code+") "+(ev.reason||"").slice(0,80));stop(true)};
@@ -460,8 +509,8 @@ function mic(){
   src.connect(proc);proc.connect(actx.destination);
 }
 function stop(fromClose){
-  live=false;clearInterval(fT);if(cam)camMsg();
-  if(NA)NA.fg({on:false}).catch(()=>{});
+  live=false;clearInterval(fT);clearInterval(kA);if(cam)camMsg();
+  if(NA){NA.orb({talk:false}).catch(()=>{});NA.fg({on:false}).catch(()=>{})}
   try{proc&&proc.disconnect();src&&src.disconnect()}catch(e){}
   stream&&stream.getTracks().forEach(t=>t.stop());
   stopPlay();try{actx&&actx.close()}catch(e){}
@@ -534,7 +583,7 @@ $("hn").textContent=U.un||"dost";icons();
 let T={};try{T=JSON.parse(localStorage.getItem("nyra_t")||"{}")}catch(e){}
 if(T.ann===undefined)T.ann=true;
 function tSave(){try{localStorage.setItem("nyra_t",JSON.stringify(T))}catch(e){}}
-function langTxt(){const m={hindi:" Sirf Hindi me baat karo.",english:" Speak only in English.",bangla:" Bangla (Bengali) me baat karo."};return (m[T.lang]||" Hinglish (Hindi + English mix) me baat karo.")+peTxt()+ppTxt()+clTxt()}
+function langTxt(){const m={hindi:" Sirf Hindi me baat karo.",english:" Speak only in English.",bangla:" Bangla (Bengali) me baat karo."};return (m[T.lang]||" Hinglish (Hindi + English mix) me baat karo.")+peTxt()+ppTxt()+clTxt()+tkTxt()}
 function sSave(){try{localStorage.setItem("nyra",JSON.stringify(S))}catch(e){}fill()}
 const FEM=[["Aoede","Halki-phulki"],["Kore","Damdaar"],["Leda","Jawaan"],["Zephyr","Chamakdaar"],["Laomedeia","Josheeli"],["Despina","Mulaayam"],["Erinome","Saaf"],["Callirrhoe","Befikar"],["Autonoe","Chamakdaar"],["Gacrux","Mature"],["Pulcherrima","Bebaak"],["Sulafat","Garmjoshi bhari"],["Vindemiatrix","Komal"]],
 MAL=[["Algenib","Khurdari"],["Charon","Jaankaari bhari"],["Fenrir","Utsaahi"],["Puck","Josheeli"],["Orus","Damdaar"],["Enceladus","Saanson bhari"],["Iapetus","Saaf"],["Umbriel","Befikar"],["Algieba","Mulaayam"],["Rasalgethi","Jaankaari bhari"],["Alnilam","Damdaar"],["Schedar","Santulit"],["Achird","Dostana"],["Zubenelgenubi","Casual"],["Sadachbia","Zindadil"],["Sadaltager","Jaankaar"],["Achernar","Naram"]];
@@ -742,7 +791,7 @@ const PMS=[
 ["calls","Call uthana aur sambhalna","Taaki wo bata sake kaun call kar raha hai aur call utha ya kaat sake.",1,"rt"],
 ["bt","Bluetooth","Taaki uski awaaz tumhare earbuds ya speaker par aaye.",1,"rt"],
 ["battery","Battery — optimisation band","Zaroori hai. Iske bina phone background me Nyra ko band kar deta hai aur wo chup ho jaati hai. Tap karo, phir Allow chuno.",2,"set"],
-["overlay","Dusre apps ke upar dikhna","Taaki uska orb tum jo bhi kar rahe ho uske upar tair sake. List me Nyra chuno, phir on karo.",2,"set"],
+["overlay","Dusre apps ke upar dikhna","Zaroori hai. Iske bina background me chhota ghoomta orb nahi dikhega aur Nyra dusre apps nahi khol paayegi. List me Nyra chuno, phir on karo.",2,"set"],
 ["notif_access","Notification access","WhatsApp messages padhne aur kaun call kar raha hai ye jaanne ke liye. List me \"Nyra\" on karo.",2,"set"],
 ["a11y","Accessibility service","Taaki wo apps khol sake, tap kar sake aur tumhare liye screen padh sake. List me \"Nyra\" on karo.",2,"set"],
 ["assistant","Default assistant","Power button long-press karo ya kone se swipe karo aur use bulao, lock screen par bhi. \"Nyra\" chuno.",2,"set"]];
@@ -755,6 +804,8 @@ async function pmAsk(m){
   const id=m[0];
   if(NP){try{if(m[4]==="rt")pmSt=await NP.request({name:id});else await NP.openSetting({name:id})}catch(e){}return}
   if(WEBP[id]){try{await WEBP[id]();pmSt[id]=true}catch(e){pmSt[id]=false}}}
+const pmRet=()=>new Promise(r=>{let d=false;const f=()=>{if(!document.hidden&&!d){d=true;document.removeEventListener("visibilitychange",f);setTimeout(r,500)}};document.addEventListener("visibilitychange",f);setTimeout(()=>{if(!d){d=true;document.removeEventListener("visibilitychange",f);r()}},120000)});
+async function pmChain(){await pmCheck();for(const id of["battery","overlay","a11y","notif_access"]){if(pmSt[id])continue;const w=pmRet();try{await NP.openSetting({name:id})}catch(e){}await w;await pmCheck()}}
 async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))return;
   await pmCheck();if(!sp.classList.contains("sk"))return;sp.innerHTML="";sp.dataset.pg="perm";
   const c=document.createElement("div");c.className="pc";
@@ -780,7 +831,7 @@ async function pmRender(){const sp=$("s-page");if(!sp.classList.contains("sk"))r
     nx.onclick=()=>{pmStep=2;pmRender()}}
   else{
     const okBat=!NP||pmSt.battery;
-    all.style.display="none";nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;
+    all.textContent="\u26a1  Baaki sab ek saath chalu karo";all.style.display=NP?"":"none";all.onclick=async()=>{all.disabled=true;ht.textContent="Ek ek karke screens khulengi. Har jagah Nyra on karo aur wapas aao.";if(NP)await pmChain();pmRender()};nx.textContent="\u2713  Ho gaya";nx.disabled=!okBat;
     ht.textContent="\"Baaki hai\" wali row par tap karo, uski system screen khulegi \u2014 kaam hone par yahan wapas aao. Inme se koi bhi baad me Menu > Permissions me badal sakte ho.";
     nx.onclick=done;
     const tb=document.createElement("div");tb.style.cssText="display:flex;gap:8px;margin-top:12px";
